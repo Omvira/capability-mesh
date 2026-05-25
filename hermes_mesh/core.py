@@ -38,9 +38,20 @@ DEFAULT_FORBIDDEN_RESULT_FIELDS = [
     "local_skills",
 ]
 
-TASK_ASSIGNMENT_STATUSES = {"auto_assigned", "awaiting_node_approval", "declined", "completed", "failed"}
+TASK_ASSIGNMENT_STATUSES = {"auto_assigned", "awaiting_node_approval", "claimed", "declined", "completed", "failed"}
 TASK_RESULT_STATUSES = {"completed", "failed"}
 CONTRIBUTION_VISIBILITIES = {"none", "local_private", "team_registry", "public_commons"}
+PLAN_STEP_KINDS = {"server_tool_call", "node_tool_call", "orchestration_tool_call"}
+PLAN_STEP_ACTIONS = {"invoke_server_tool", "invoke_node", "orchestration_action", "completed", "no_match"}
+SERVER_LOCAL_TOOLS = {"aggregate_results", "verify_result", "echo_sanitized"}
+SERVER_TOOL_NODE_PRIVATE_FIELDS = {
+    "transport",
+    "transport_command",
+    "dispatch_command",
+    "command",
+    "node_private_transport",
+    "node_dispatch_command",
+}
 
 PRIVATE_PRIVACY_FLAGS = {
     "expose_local_skills": False,
@@ -302,6 +313,22 @@ def _safe_record_id(value: Any, field: str) -> str:
     return text
 
 
+def _safe_tool_name(value: Any, field: str) -> str:
+    return _safe_record_id(value, field)
+
+
+def _contains_private_command_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key) in SERVER_TOOL_NODE_PRIVATE_FIELDS:
+                return True
+            if _contains_private_command_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_private_command_key(item) for item in value)
+    return False
+
+
 def _write_registry_record(
     dirname: str,
     record_id: str,
@@ -398,6 +425,66 @@ def list_task_assignments(mesh_home: str | Path | None = None) -> list[dict[str,
     return _list_registry_records("assignments", validate_task_assignment, mesh_home)
 
 
+def get_task_assignment(assignment_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Return one assignment by id."""
+
+    for assignment in list_task_assignments(mesh_home=mesh_home):
+        if assignment.get("assignment_id") == assignment_id:
+            return assignment
+    raise CapabilityMeshValidationError(f"unknown assignment_id: {assignment_id}")
+
+
+def get_posted_task(task_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Return one posted task by id."""
+
+    for task in list_posted_tasks(mesh_home=mesh_home):
+        if task.get("task_id") == task_id:
+            return task
+    raise CapabilityMeshValidationError(f"unknown task_id: {task_id}")
+
+
+def list_node_assignments(node_id: str, mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return pending work items assigned to a node, including the task contract."""
+
+    _safe_record_id(node_id, "node_id")
+    work: list[dict[str, Any]] = []
+    for assignment in list_task_assignments(mesh_home=mesh_home):
+        if assignment.get("node_id") != node_id:
+            continue
+        if assignment.get("status") not in {"auto_assigned", "awaiting_node_approval", "claimed"}:
+            continue
+        assigned_task = assignment.get("tool_call")
+        if assigned_task is not None:
+            assigned_task = validate_task_contract(_require_mapping(assigned_task, "tool_call"))
+        else:
+            assigned_task = get_posted_task(str(assignment["task_id"]), mesh_home=mesh_home)
+        work.append(
+            {
+                "assignment": assignment,
+                "task": assigned_task,
+            }
+        )
+    return work
+
+
+def claim_task_assignment(
+    assignment_id: str,
+    node_id: str,
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Mark an assigned work item as claimed by its assigned node."""
+
+    assignment = get_task_assignment(assignment_id, mesh_home=mesh_home)
+    if assignment.get("node_id") != node_id:
+        raise CapabilityMeshValidationError("assignment is not assigned to node_id")
+    if assignment.get("status") not in {"auto_assigned", "awaiting_node_approval", "claimed"}:
+        raise CapabilityMeshValidationError("assignment is not claimable")
+    claimed = dict(assignment)
+    claimed["status"] = "claimed"
+    record_task_assignment(claimed, mesh_home=mesh_home)
+    return validate_task_assignment(claimed)
+
+
 def record_task_result(
     result: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -413,6 +500,161 @@ def list_task_results(mesh_home: str | Path | None = None) -> list[dict[str, Any
     """Return validated task result records."""
 
     return _list_registry_records("results", validate_task_result_record, mesh_home)
+
+
+def complete_task_assignment(
+    assignment_id: str,
+    node_id: str,
+    result: Mapping[str, Any],
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Record node output, update contribution/assignment state, and choose next action."""
+
+    assignment = get_task_assignment(assignment_id, mesh_home=mesh_home)
+    if assignment.get("node_id") != node_id:
+        raise CapabilityMeshValidationError("assignment is not assigned to node_id")
+    assigned_task = assignment.get("tool_call")
+    if assigned_task is not None:
+        task = validate_task_contract(_require_mapping(assigned_task, "tool_call"))
+    else:
+        task = get_posted_task(str(assignment["task_id"]), mesh_home=mesh_home)
+    raw = dict(_require_mapping(result, "result"))
+    raw["task_id"] = task["task_id"]
+    raw["node_id"] = node_id
+    result_record = build_task_result_record(raw, task)
+    record_task_result(raw, task, mesh_home=mesh_home)
+
+    finished = dict(assignment)
+    finished["status"] = "completed" if result_record["status"] == "completed" else "failed"
+    record_task_assignment(finished, mesh_home=mesh_home)
+
+    verification = result_record.get("verification_report", {})
+    contribution = {
+        "schema_version": SCHEMA_VERSION,
+        "contribution_id": f"{task['task_id']}-{node_id}-contribution",
+        "task_id": task["task_id"],
+        "node_id": node_id,
+        "summary": str(result_record.get("result", {}).get("final_summary") or "Task result recorded"),
+        "visibility": "local_private",
+        "human_consent": False,
+        "verification_report": verification,
+    }
+    record_contribution(contribution, mesh_home=mesh_home)
+
+    if raw.get("needs_more_results") is True or raw.get("partial") is True:
+        decision: dict[str, Any] = {"action": "awaiting_more_results", "reason": "node reported partial result"}
+    elif result_record["status"] == "completed" and verification.get("status") == "passed":
+        decision = {"action": "completed", "reason": "result completed and verification passed"}
+    else:
+        next_assignment = _build_route_next_tool_call_assignment(task, node_id, mesh_home=mesh_home)
+        if next_assignment is not None:
+            record_task_assignment(next_assignment, mesh_home=mesh_home)
+            decision = {
+                "action": "route_next",
+                "reason": "current result failed or did not verify",
+                "next_assignment": next_assignment,
+            }
+        else:
+            remaining_nodes = [
+                manifest
+                for manifest in list_registered_nodes(mesh_home=mesh_home)
+                if manifest.get("node_id") != node_id
+            ]
+            next_route = route_task(task, remaining_nodes, required_tools=list(task.get("required_tools", [])))
+            if next_route.get("selected_node"):
+                next_assignment = build_task_assignment(task, next_route)
+                record_task_assignment(next_assignment, mesh_home=mesh_home)
+                decision = {
+                    "action": "route_next",
+                    "reason": "current result failed or did not verify",
+                    "route": next_route,
+                    "next_assignment": next_assignment,
+                }
+            else:
+                decision = {
+                    "action": "no_match",
+                    "reason": next_route.get("reason", "no remaining matching nodes"),
+                    "route": next_route,
+                }
+    return {
+        "assignment": validate_task_assignment(finished),
+        "result_record": result_record,
+        "contribution": validate_contribution_record(contribution),
+        "decision": decision,
+    }
+
+
+def complete_node_tool_call(
+    tool_call_id: str,
+    node_id: str,
+    result: Mapping[str, Any],
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Complete one server-planned node tool call/subtask assignment."""
+
+    return complete_task_assignment(tool_call_id, node_id, result, mesh_home=mesh_home)
+
+
+def _next_tool_call_index(parent_task_id: str, mesh_home: str | Path | None = None) -> int:
+    max_index = 0
+    prefix = f"{parent_task_id}-"
+    marker = "-call-"
+    for assignment in list_task_assignments(mesh_home=mesh_home):
+        if assignment.get("parent_task_id") != parent_task_id:
+            continue
+        tool_call_id = str(assignment.get("tool_call_id") or assignment.get("assignment_id", ""))
+        if not tool_call_id.startswith(prefix) or marker not in tool_call_id:
+            continue
+        try:
+            max_index = max(max_index, int(tool_call_id.rsplit(marker, 1)[1]))
+        except ValueError:
+            continue
+    for result in list_task_results(mesh_home=mesh_home):
+        for value in (str(result.get("task_id", "")), str(result.get("result_id", ""))):
+            if not value.startswith(prefix) or marker not in value:
+                continue
+            try:
+                max_index = max(max_index, int(value.rsplit(marker, 1)[1].split("-", 1)[0]))
+            except ValueError:
+                continue
+    return max_index + 1
+
+
+def _build_route_next_tool_call_assignment(
+    task: Mapping[str, Any],
+    node_id: str,
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any] | None:
+    if not task.get("parent_task_id"):
+        return None
+    parent_task_id = str(task["parent_task_id"])
+    try:
+        parent_task = get_posted_task(parent_task_id, mesh_home=mesh_home)
+    except CapabilityMeshValidationError:
+        return None
+    remaining_nodes = [
+        manifest
+        for manifest in list_registered_nodes(mesh_home=mesh_home)
+        if manifest.get("node_id") != node_id
+    ]
+    route_contract = dict(parent_task)
+    route_contract["task_type"] = task["task_type"]
+    route = route_task(route_contract, remaining_nodes, required_tools=list(task.get("required_tools", [])))
+    if not route.get("selected_node"):
+        return None
+    subtask = {
+        "objective": task["objective"],
+        "inputs": copy.deepcopy(task.get("inputs", {})),
+        "task_type": task["task_type"],
+        "required_tools": list(task.get("required_tools", [])),
+    }
+    tool_call = build_node_tool_call(
+        parent_task,
+        route,
+        subtask=subtask,
+        call_index=_next_tool_call_index(parent_task_id, mesh_home=mesh_home),
+    )
+    return build_node_tool_call_assignment(parent_task, route, tool_call)
 
 
 def record_contribution(contribution: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
@@ -510,6 +752,15 @@ def validate_task_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
     expected_fields = contract.get("expected_fields")
     if expected_fields is not None:
         _require_non_empty_string_list(expected_fields, "expected_fields")
+    parent_task_id = contract.get("parent_task_id")
+    if parent_task_id is not None:
+        _require_non_empty_string(parent_task_id, "parent_task_id")
+    tool_call_id = contract.get("tool_call_id")
+    if tool_call_id is not None:
+        _safe_record_id(tool_call_id, "tool_call_id")
+    assigned_node_id = contract.get("assigned_node_id")
+    if assigned_node_id is not None:
+        _safe_record_id(assigned_node_id, "assigned_node_id")
     return copy.deepcopy(dict(contract))
 
 
@@ -540,6 +791,12 @@ def validate_task_assignment(assignment: Mapping[str, Any]) -> dict[str, Any]:
     candidates = assignment.get("candidates", [])
     if candidates != []:
         _require_non_empty_string_list(candidates, "candidates")
+    if assignment.get("parent_task_id") is not None:
+        _require_non_empty_string(assignment["parent_task_id"], "parent_task_id")
+    if assignment.get("tool_call_id") is not None:
+        _safe_record_id(assignment["tool_call_id"], "tool_call_id")
+    if assignment.get("tool_call") is not None:
+        validate_task_contract(_require_mapping(assignment["tool_call"], "tool_call"))
     return copy.deepcopy(dict(assignment))
 
 
@@ -672,6 +929,302 @@ def build_task_assignment(contract: Mapping[str, Any], route: Mapping[str, Any])
     return validate_task_assignment(assignment)
 
 
+def build_node_tool_call(
+    parent_contract: Mapping[str, Any],
+    route: Mapping[str, Any],
+    *,
+    subtask: Mapping[str, Any] | None = None,
+    call_index: int = 1,
+) -> dict[str, Any]:
+    """Build the task contract for one node capability call planned by the server."""
+
+    parent = validate_task_post(parent_contract)
+    route_data = _require_mapping(route, "route")
+    selected_node = route_data.get("selected_node")
+    _require_non_empty_string(selected_node, "selected_node")
+    if call_index < 1:
+        raise CapabilityMeshValidationError("call_index must be greater than zero")
+    subtask_data = dict(_require_mapping(subtask or {}, "subtask"))
+    required_tools = subtask_data.get("required_tools", parent.get("required_tools", []))
+    if required_tools:
+        _require_non_empty_string_list(required_tools, "subtask.required_tools")
+    tool_call_id = str(subtask_data.get("tool_call_id") or f"{parent['task_id']}-{selected_node}-call-{call_index}")
+    _safe_record_id(tool_call_id, "tool_call_id")
+    tool_call = {
+        "schema_version": SCHEMA_VERSION,
+        "task_id": tool_call_id,
+        "parent_task_id": parent["task_id"],
+        "tool_call_id": tool_call_id,
+        "node_id": selected_node,
+        "assigned_node_id": selected_node,
+        "task_type": str(subtask_data.get("task_type") or parent["task_type"]),
+        "objective": str(subtask_data.get("objective") or parent["objective"]),
+        "inputs": copy.deepcopy(subtask_data.get("inputs", parent.get("inputs", {}))),
+        "allowed_result_fields": list(parent["allowed_result_fields"]),
+        "forbidden_result_fields": list(parent["forbidden_result_fields"]),
+    }
+    if required_tools:
+        tool_call["required_tools"] = list(required_tools)
+    if parent.get("expected_fields") is not None:
+        tool_call["expected_fields"] = list(parent["expected_fields"])
+    return validate_task_contract(tool_call)
+
+
+def build_node_tool_call_assignment(
+    parent_contract: Mapping[str, Any],
+    route: Mapping[str, Any],
+    tool_call: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a persisted assignment for one server-planned node tool call."""
+
+    parent = validate_task_post(parent_contract)
+    call = validate_task_contract(tool_call)
+    route_data = _require_mapping(route, "route")
+    selected_node = route_data.get("selected_node")
+    _require_non_empty_string(selected_node, "selected_node")
+    assignment = {
+        "schema_version": SCHEMA_VERSION,
+        "assignment_id": call["task_id"],
+        "task_id": parent["task_id"],
+        "parent_task_id": parent["task_id"],
+        "tool_call_id": call["task_id"],
+        "task_type": call["task_type"],
+        "node_id": selected_node,
+        "status": route_data.get("status"),
+        "candidates": list(route_data.get("candidates", [])),
+        "reason": route_data.get("reason", "server-planned node tool call"),
+        "tool_call": call,
+    }
+    return validate_task_assignment(assignment)
+
+
+def validate_tool_ref(ref: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a server or node tool reference without private transport data."""
+
+    ref_data = _require_mapping(ref, "tool_ref")
+    scope = ref_data.get("scope")
+    if scope not in {"server", "node", "orchestration"}:
+        raise CapabilityMeshValidationError("tool_ref.scope must be server, node, or orchestration")
+    name = _safe_tool_name(ref_data.get("name"), "tool_ref.name")
+    if scope == "server" and name not in SERVER_LOCAL_TOOLS:
+        raise CapabilityMeshValidationError("server tool is not allowlisted")
+    validated = {"scope": scope, "name": name}
+    if ref_data.get("node_id") is not None:
+        if scope != "node":
+            raise CapabilityMeshValidationError("tool_ref.node_id is only valid for node tool refs")
+        validated["node_id"] = _safe_record_id(ref_data["node_id"], "tool_ref.node_id")
+    if _contains_private_command_key(ref_data):
+        raise CapabilityMeshValidationError("tool_ref must not include private transport or dispatch commands")
+    return validated
+
+
+def validate_plan_step(step: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a mixed orchestration step request."""
+
+    step_data = dict(_require_mapping(step, "requested_step"))
+    kind = step_data.get("kind")
+    if kind not in PLAN_STEP_KINDS:
+        raise CapabilityMeshValidationError("requested_step.kind must be server_tool_call, node_tool_call, or orchestration_tool_call")
+    if _contains_private_command_key(step_data):
+        raise CapabilityMeshValidationError("requested_step must not include private transport or dispatch commands")
+    if kind == "server_tool_call":
+        tool_name = _safe_tool_name(step_data.get("tool_name") or step_data.get("name"), "tool_name")
+        if tool_name not in SERVER_LOCAL_TOOLS:
+            raise CapabilityMeshValidationError("server tool is not allowlisted")
+        arguments = step_data.get("arguments", {})
+        _require_mapping(arguments, "arguments")
+        sanitized_arguments = {
+            str(key): copy.deepcopy(value)
+            for key, value in dict(arguments).items()
+            if str(key) not in set(DEFAULT_FORBIDDEN_RESULT_FIELDS)
+        }
+        return {"kind": kind, "tool_name": tool_name, "arguments": sanitized_arguments}
+    if kind == "node_tool_call":
+        validated = {"kind": kind}
+        for key in ("objective", "task_type"):
+            if step_data.get(key) is not None:
+                _require_non_empty_string(step_data[key], key)
+                validated[key] = str(step_data[key])
+        if step_data.get("inputs") is not None:
+            validated["inputs"] = copy.deepcopy(dict(_require_mapping(step_data["inputs"], "inputs")))
+        if step_data.get("required_tools") is not None:
+            _require_non_empty_string_list(step_data["required_tools"], "required_tools")
+            validated["required_tools"] = list(step_data["required_tools"])
+        return validated
+    action = step_data.get("action", "completed")
+    if action not in {"completed", "no_match"}:
+        raise CapabilityMeshValidationError("orchestration action must be completed or no_match")
+    return {"kind": kind, "action": action, "reason": str(step_data.get("reason") or "orchestration action")}
+
+
+def build_server_tool_call(
+    parent_contract: Mapping[str, Any],
+    requested_step: Mapping[str, Any],
+    *,
+    call_index: int = 1,
+) -> dict[str, Any]:
+    """Build one allowlisted server-local tool call for a parent task."""
+
+    parent = validate_task_post(parent_contract)
+    step = validate_plan_step(requested_step)
+    if step["kind"] != "server_tool_call":
+        raise CapabilityMeshValidationError("requested_step.kind must be server_tool_call")
+    if call_index < 1:
+        raise CapabilityMeshValidationError("call_index must be greater than zero")
+    step_id = str(step.get("step_id") or f"{parent['task_id']}-server-{step['tool_name']}-call-{call_index}")
+    _safe_record_id(step_id, "step_id")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "server_tool_call",
+        "step_id": step_id,
+        "parent_task_id": parent["task_id"],
+        "tool_ref": validate_tool_ref({"scope": "server", "name": step["tool_name"]}),
+        "arguments": copy.deepcopy(step["arguments"]),
+        "allowed_result_fields": list(parent["allowed_result_fields"]),
+        "forbidden_result_fields": list(parent["forbidden_result_fields"]),
+    }
+
+
+def _execute_echo_sanitized(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    return {"final_summary": str(arguments.get("message") or arguments.get("final_summary") or "")}
+
+
+def _execute_aggregate_results(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    results = arguments.get("results", [])
+    if not isinstance(results, list):
+        raise CapabilityMeshValidationError("aggregate_results.results must be a list")
+    summaries: list[str] = []
+    reports: list[str] = []
+    for item in results:
+        data = _require_mapping(item, "aggregate_results result")
+        if data.get("final_summary") is not None:
+            summaries.append(str(data["final_summary"]))
+        if data.get("test_report") is not None:
+            reports.append(str(data["test_report"]))
+    output: dict[str, Any] = {"final_summary": "\n".join(summaries)}
+    if reports:
+        output["test_report"] = "\n".join(reports)
+    return output
+
+
+def _execute_verify_result(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    result = _require_mapping(arguments.get("result", {}), "verify_result.result")
+    expected_fields = arguments.get("expected_fields", [])
+    if expected_fields:
+        _require_non_empty_string_list(expected_fields, "verify_result.expected_fields")
+    missing = [field for field in expected_fields if result.get(field) in {None, ""}]
+    status = "failed" if missing else "passed"
+    return {
+        "final_summary": "verification " + status,
+        "test_report": "missing: " + ", ".join(missing) if missing else "all expected fields present",
+    }
+
+
+def execute_server_tool_call(tool_call: Mapping[str, Any], parent_contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Run one deterministic server-local tool and privacy-filter its result."""
+
+    call = _require_mapping(tool_call, "tool_call")
+    if call.get("kind") != "server_tool_call":
+        raise CapabilityMeshValidationError("tool_call.kind must be server_tool_call")
+    tool_ref = validate_tool_ref(_require_mapping(call.get("tool_ref"), "tool_ref"))
+    arguments = _require_mapping(call.get("arguments", {}), "arguments")
+    if tool_ref["name"] == "echo_sanitized":
+        raw_result = _execute_echo_sanitized(arguments)
+    elif tool_ref["name"] == "aggregate_results":
+        raw_result = _execute_aggregate_results(arguments)
+    elif tool_ref["name"] == "verify_result":
+        raw_result = _execute_verify_result(arguments)
+    else:
+        raise CapabilityMeshValidationError("server tool is not allowlisted")
+    parent = validate_task_post(parent_contract)
+    contract = dict(parent)
+    contract["task_id"] = str(call["step_id"])
+    contract["parent_task_id"] = parent["task_id"]
+    return build_task_result_record(
+        {
+            "result_id": f"{call['step_id']}-server-result",
+            "task_id": call["step_id"],
+            "node_id": "server",
+            "status": "completed",
+            "result": raw_result,
+        },
+        contract,
+    )
+
+
+def plan_task_step(
+    parent_contract: Mapping[str, Any],
+    manifests: list[Mapping[str, Any]],
+    *,
+    requested_step: Mapping[str, Any] | None = None,
+    call_index: int | None = None,
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Plan one mixed parent-task step: server tool, node tool, orchestration action, or no_match."""
+
+    parent = validate_task_post(parent_contract)
+    if requested_step is None:
+        return plan_next_node_call(parent, manifests, call_index=call_index or _next_tool_call_index(parent["task_id"], mesh_home=mesh_home))
+    step = validate_plan_step(requested_step)
+    if step["kind"] == "server_tool_call":
+        tool_call = build_server_tool_call(parent, step, call_index=call_index or _next_tool_call_index(parent["task_id"], mesh_home=mesh_home))
+        return {"schema_version": SCHEMA_VERSION, "action": "invoke_server_tool", "task_id": parent["task_id"], "tool_call": tool_call}
+    if step["kind"] == "node_tool_call":
+        subtask = {key: value for key, value in step.items() if key != "kind"}
+        return plan_next_node_call(parent, manifests, subtask=subtask, call_index=call_index or _next_tool_call_index(parent["task_id"], mesh_home=mesh_home))
+    return {"schema_version": SCHEMA_VERSION, "action": step["action"], "task_id": parent["task_id"], "reason": step["reason"]}
+
+
+def execute_plan_step(
+    parent_contract: Mapping[str, Any],
+    manifests: list[Mapping[str, Any]],
+    *,
+    requested_step: Mapping[str, Any] | None = None,
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Plan and persist the side effect for one mixed orchestration step."""
+
+    parent = validate_task_post(parent_contract)
+    plan = plan_task_step(parent, manifests, requested_step=requested_step, mesh_home=mesh_home)
+    if plan.get("action") == "invoke_server_tool":
+        result_record = execute_server_tool_call(plan["tool_call"], parent)
+        _write_registry_record("results", result_record["result_id"], result_record, mesh_home)
+        return {**plan, "result_record": result_record}
+    if plan.get("action") == "invoke_node":
+        record_task_assignment(plan["assignment"], mesh_home=mesh_home)
+    return plan
+
+
+def plan_next_node_call(
+    parent_contract: Mapping[str, Any],
+    manifests: list[Mapping[str, Any]],
+    *,
+    subtask: Mapping[str, Any] | None = None,
+    call_index: int = 1,
+) -> dict[str, Any]:
+    """Plan the next server-controlled node tool call without requiring whole-task completion."""
+
+    parent = validate_task_post(parent_contract)
+    subtask_data = dict(_require_mapping(subtask or {}, "subtask"))
+    required_tools = subtask_data.get("required_tools", parent.get("required_tools", []))
+    route_contract = dict(parent)
+    if subtask_data.get("task_type") is not None:
+        route_contract["task_type"] = subtask_data["task_type"]
+    route = route_task(route_contract, manifests, required_tools=list(required_tools or []))
+    if not route.get("selected_node"):
+        return {"schema_version": SCHEMA_VERSION, "action": "no_match", "route": route, "reason": route.get("reason", "no matching node")}
+    tool_call = build_node_tool_call(parent, route, subtask=subtask_data, call_index=call_index)
+    assignment = build_node_tool_call_assignment(parent, route, tool_call)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "action": "invoke_node",
+        "task_id": parent["task_id"],
+        "route": route,
+        "tool_call": tool_call,
+        "assignment": assignment,
+    }
+
+
 def build_task_result_record(result: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     """Build a privacy-filtered result record from raw node output."""
 
@@ -700,16 +1253,20 @@ def build_task_result_record(result: Mapping[str, Any], contract: Mapping[str, A
 
 
 def build_dispatch_prompt(contract: Mapping[str, Any]) -> str:
-    """Build a self-contained, privacy-preserving one-shot task prompt."""
+    """Build a self-contained, privacy-preserving one-shot node tool-call prompt."""
 
     validated = validate_task_contract(contract)
+    parent = validated.get("parent_task_id", validated["task_id"])
     return (
-        "Capability Mesh task. Use only the objective and inputs below. "
+        "Capability Mesh node tool call. You are responsible for the assigned subtask only. "
+        "Do not attempt to complete the parent task unless this subtask does so. "
+        "Use only the objective and inputs below. "
         "Do not load or expose private memory, local skills, session history, "
         "reasoning traces, raw logs, environment variables, or secrets. Execute without private memory. Return "
-        "JSON containing only these allowed fields: "
+        "JSON containing only these allowed fields plus optional boolean partial and needs_more_results signals: "
         f"{', '.join(validated['allowed_result_fields'])}.\n\n"
-        f"Task ID: {validated['task_id']}\n"
+        f"Parent task ID: {parent}\n"
+        f"Tool call ID: {validated['task_id']}\n"
         f"Task type: {validated['task_type']}\n"
         f"Objective: {validated['objective']}\n"
         f"Inputs: {json.dumps(validated.get('inputs', {}), ensure_ascii=False, sort_keys=True)}"

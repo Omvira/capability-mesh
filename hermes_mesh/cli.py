@@ -153,6 +153,21 @@ def build_parser() -> argparse.ArgumentParser:
     client_route.add_argument("task_path")
     client_route.add_argument("--required-tool", action="append", dest="required_tools")
     client_route.set_defaults(func=cmd_client_route_task)
+    client_poll = client_sub.add_parser("poll", help="Poll assigned work for a node")
+    client_poll.add_argument("node_id")
+    client_poll.set_defaults(func=cmd_client_poll)
+    client_claim = client_sub.add_parser("claim", help="Claim an assigned work item")
+    client_claim.add_argument("assignment_id")
+    client_claim.add_argument("--node-id", required=True)
+    client_claim.set_defaults(func=cmd_client_claim)
+    client_complete = client_sub.add_parser("complete", help="Complete an assigned work item with a result file")
+    client_complete.add_argument("assignment_id")
+    client_complete.add_argument("result_path")
+    client_complete.add_argument("--node-id", required=True)
+    client_complete.set_defaults(func=cmd_client_complete)
+    client_run = client_sub.add_parser("run-next", help="Claim, execute, and complete the next local assignment")
+    client_run.add_argument("manifest_path")
+    client_run.set_defaults(func=cmd_client_run_next)
 
     return parser
 
@@ -316,6 +331,28 @@ def cmd_client_post_task(args: argparse.Namespace) -> int:
 def cmd_client_route_task(args: argparse.Namespace) -> int:
     task = _load_yaml_or_json(args.task_path)
     _write_json_or_stdout(_client(args).route_task(task, required_tools=args.required_tools or None))
+    return 0
+
+
+def cmd_client_poll(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).poll_assignments(args.node_id))
+    return 0
+
+
+def cmd_client_claim(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).claim_assignment(args.assignment_id, args.node_id))
+    return 0
+
+
+def cmd_client_complete(args: argparse.Namespace) -> int:
+    result = _load_yaml_or_json(args.result_path)
+    _write_json_or_stdout(_client(args).complete_assignment(args.assignment_id, args.node_id, result))
+    return 0
+
+
+def cmd_client_run_next(args: argparse.Namespace) -> int:
+    manifest = _load_yaml_or_json(args.manifest_path)
+    _write_json_or_stdout(_client(args).run_next_assignment(manifest))
     return 0
 
 

@@ -218,6 +218,283 @@ def test_route_task_auto_accept_status():
     assert route["status"] == "auto_assigned"
 
 
+def test_plan_next_node_call_builds_subtask_tool_call_without_requiring_whole_task():
+    from hermes_mesh import build_default_capability_manifest, plan_next_node_call
+
+    manifest = build_default_capability_manifest(
+        node_id="pytest-node",
+        display_name="Pytest",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+        requires_human_approval=False,
+    )
+    manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+
+    plan = plan_next_node_call(
+        task_contract("parent-task"),
+        [manifest],
+        subtask={
+            "objective": "Run only tests/hermes_mesh/test_core_independence.py",
+            "inputs": {"path": "tests/hermes_mesh/test_core_independence.py"},
+            "required_tools": ["pytest"],
+        },
+    )
+
+    assert plan["action"] == "invoke_node"
+    assert plan["tool_call"]["parent_task_id"] == "parent-task"
+    assert plan["tool_call"]["tool_call_id"] == "parent-task-pytest-node-call-1"
+    assert plan["tool_call"]["node_id"] == "pytest-node"
+    assert plan["tool_call"]["objective"] == "Run only tests/hermes_mesh/test_core_independence.py"
+    assert plan["tool_call"]["inputs"] == {"path": "tests/hermes_mesh/test_core_independence.py"}
+    assert plan["assignment"]["assignment_id"] == "parent-task-pytest-node-call-1"
+    assert plan["assignment"]["tool_call_id"] == "parent-task-pytest-node-call-1"
+
+
+def test_server_tool_step_runs_and_records_filtered_result(tmp_path):
+    from hermes_mesh import execute_plan_step, list_task_results, post_task
+
+    post_task(task_contract("parent-task"), mesh_home=tmp_path)
+
+    executed = execute_plan_step(
+        task_contract("parent-task"),
+        [],
+        requested_step={
+            "kind": "server_tool_call",
+            "tool_name": "echo_sanitized",
+            "arguments": {
+                "message": "server says token=abc123",
+                "raw_private_logs": "private",
+            },
+        },
+        mesh_home=tmp_path,
+    )
+
+    assert executed["action"] == "invoke_server_tool"
+    assert executed["tool_call"]["kind"] == "server_tool_call"
+    assert executed["tool_call"]["tool_ref"] == {"scope": "server", "name": "echo_sanitized"}
+    assert executed["tool_call"]["parent_task_id"] == "parent-task"
+    assert executed["tool_call"]["step_id"] == "parent-task-server-echo_sanitized-call-1"
+    assert executed["result_record"]["node_id"] == "server"
+    assert executed["result_record"]["result"] == {"final_summary": "server says token=[REDACTED]"}
+    assert list_task_results(mesh_home=tmp_path)[0]["result"] == {"final_summary": "server says token=[REDACTED]"}
+    assert "raw_private_logs" not in json.dumps(executed)
+
+
+def test_plan_step_node_call_still_polls_as_assignment(tmp_path):
+    from hermes_mesh import build_default_capability_manifest, execute_plan_step, list_node_assignments, post_task
+
+    manifest = build_default_capability_manifest(
+        node_id="pytest-node",
+        display_name="Pytest",
+        task_types=["test_running"],
+        tools_available=["pytest"],
+        requires_human_approval=False,
+        dispatch_command=["private-dispatch"],
+    )
+    manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+    post_task(task_contract("parent-task"), mesh_home=tmp_path)
+
+    planned = execute_plan_step(
+        task_contract("parent-task"),
+        [manifest],
+        requested_step={
+            "kind": "node_tool_call",
+            "objective": "Run focused tests",
+            "required_tools": ["pytest"],
+        },
+        mesh_home=tmp_path,
+    )
+
+    assert planned["action"] == "invoke_node"
+    assert planned["assignment"]["assignment_id"] == "parent-task-pytest-node-call-1"
+    work = list_node_assignments("pytest-node", mesh_home=tmp_path)
+    assert work[0]["task"]["parent_task_id"] == "parent-task"
+    assert work[0]["task"]["objective"] == "Run focused tests"
+    assert "private-dispatch" not in json.dumps(work)
+    assert "server_tool_call" not in json.dumps(work)
+
+
+def test_mixed_sequence_preserves_parent_task_and_step_ids(tmp_path):
+    from hermes_mesh import build_default_capability_manifest, execute_plan_step, post_task
+
+    manifest = build_default_capability_manifest(
+        node_id="node-a",
+        display_name="Node A",
+        task_types=["test_running"],
+        tools_available=["pytest"],
+        requires_human_approval=False,
+    )
+    manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+    post_task(task_contract("parent-task"), mesh_home=tmp_path)
+
+    server_step = execute_plan_step(
+        task_contract("parent-task"),
+        [manifest],
+        requested_step={"kind": "server_tool_call", "tool_name": "echo_sanitized", "arguments": {"message": "prepared"}},
+        mesh_home=tmp_path,
+    )
+    node_step = execute_plan_step(
+        task_contract("parent-task"),
+        [manifest],
+        requested_step={"kind": "node_tool_call", "objective": "Run after prepare", "required_tools": ["pytest"]},
+        mesh_home=tmp_path,
+    )
+
+    assert server_step["tool_call"]["parent_task_id"] == "parent-task"
+    assert server_step["tool_call"]["step_id"] == "parent-task-server-echo_sanitized-call-1"
+    assert node_step["tool_call"]["parent_task_id"] == "parent-task"
+    assert node_step["tool_call"]["tool_call_id"] == "parent-task-node-a-call-2"
+    assert node_step["assignment"]["parent_task_id"] == "parent-task"
+
+
+def test_plan_step_rejects_forbidden_server_tool_and_private_fields():
+    import pytest
+
+    from hermes_mesh import CapabilityMeshValidationError, build_server_tool_call
+
+    with pytest.raises(CapabilityMeshValidationError):
+        build_server_tool_call(
+            task_contract("parent-task"),
+            {"kind": "server_tool_call", "tool_name": "shell", "arguments": {"command": "rm -rf /"}},
+        )
+    with pytest.raises(CapabilityMeshValidationError):
+        build_server_tool_call(
+            task_contract("parent-task"),
+            {"kind": "server_tool_call", "tool_name": "echo_sanitized", "arguments": {"dispatch_command": ["secret"]}},
+        )
+
+
+def test_dispatch_prompt_limits_node_to_assigned_subtask_and_partial_signals():
+    from hermes_mesh import build_dispatch_prompt, build_node_tool_call
+
+    route = {
+        "schema_version": "capability-mesh-alpha-1",
+        "task_id": "parent-task",
+        "task_type": "test_running",
+        "status": "auto_assigned",
+        "selected_node": "pytest-node",
+        "candidates": ["pytest-node"],
+        "reason": "test",
+    }
+    tool_call = build_node_tool_call(
+        task_contract("parent-task"),
+        route,
+        subtask={"objective": "Run one focused test file", "inputs": {"path": "tests/hermes_mesh"}},
+    )
+
+    prompt = build_dispatch_prompt(tool_call)
+
+    assert "assigned subtask only" in prompt
+    assert "Do not attempt to complete the parent task unless this subtask does so" in prompt
+    assert "partial" in prompt
+    assert "needs_more_results" in prompt
+    assert "Run one focused test file" in prompt
+    assert "memory" in prompt
+    assert "reasoning traces" in prompt
+
+
+def test_complete_node_tool_call_aggregates_filtered_partial_result(tmp_path):
+    from hermes_mesh import (
+        build_default_capability_manifest,
+        list_task_results,
+        plan_next_node_call,
+        post_task,
+        record_task_assignment,
+        register_node_manifest,
+        complete_node_tool_call,
+    )
+
+    manifest = build_default_capability_manifest(
+        node_id="partial-node",
+        display_name="Partial",
+        task_types=["test_running"],
+        tools_available=["pytest"],
+        requires_human_approval=False,
+    )
+    manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+    register_node_manifest(manifest, mesh_home=tmp_path)
+    post_task(task_contract("parent-task"), mesh_home=tmp_path)
+    plan = plan_next_node_call(task_contract("parent-task"), [manifest])
+    record_task_assignment(plan["assignment"], mesh_home=tmp_path)
+
+    completed = complete_node_tool_call(
+        "parent-task-partial-node-call-1",
+        "partial-node",
+        {
+            "status": "completed",
+            "partial": True,
+            "needs_more_results": True,
+            "result": {
+                "final_summary": "linux tests passed token=abc123",
+                "test_report": "1 passed",
+                "raw_private_logs": "private",
+                "environment_variables": {"TOKEN": "no"},
+                "reasoning_trace": "private",
+            },
+        },
+        mesh_home=tmp_path,
+    )
+
+    assert completed["decision"]["action"] == "awaiting_more_results"
+    assert completed["result_record"]["result"] == {
+        "final_summary": "linux tests passed token=[REDACTED]",
+        "test_report": "1 passed",
+    }
+    assert list_task_results(mesh_home=tmp_path)[0]["result"] == completed["result_record"]["result"]
+
+
+def test_completion_routes_to_next_candidate_when_planned_tool_call_fails(tmp_path):
+    from hermes_mesh import (
+        build_default_capability_manifest,
+        complete_node_tool_call,
+        get_task_assignment,
+        plan_next_node_call,
+        post_task,
+        record_task_assignment,
+        register_node_manifest,
+    )
+
+    alpha = build_default_capability_manifest(
+        node_id="alpha-node",
+        display_name="Alpha",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+        requires_human_approval=False,
+    )
+    beta = build_default_capability_manifest(
+        node_id="beta-node",
+        display_name="Beta",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+        requires_human_approval=False,
+    )
+    for manifest in (alpha, beta):
+        manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+        register_node_manifest(manifest, mesh_home=tmp_path)
+    post_task(task_contract("parent-task"), mesh_home=tmp_path)
+    plan = plan_next_node_call(
+        task_contract("parent-task"),
+        [alpha, beta],
+        subtask={"objective": "Run only one focused test file", "required_tools": ["pytest"]},
+    )
+    record_task_assignment(plan["assignment"], mesh_home=tmp_path)
+
+    completed = complete_node_tool_call(
+        "parent-task-alpha-node-call-1",
+        "alpha-node",
+        {"status": "failed", "result": {"final_summary": "focused run failed"}},
+        mesh_home=tmp_path,
+    )
+
+    assert completed["decision"]["action"] == "route_next"
+    next_assignment = completed["decision"]["next_assignment"]
+    assert next_assignment["node_id"] == "beta-node"
+    assert next_assignment["parent_task_id"] == "parent-task"
+    assert next_assignment["tool_call_id"] == "parent-task-beta-node-call-2"
+    assert next_assignment["tool_call"]["objective"] == "Run only one focused test file"
+    assert get_task_assignment("parent-task-beta-node-call-2", mesh_home=tmp_path)["tool_call"]["assigned_node_id"] == "beta-node"
+
+
 def test_record_task_result_filters_private_fields(tmp_path):
     from hermes_mesh import list_task_results, post_task, record_task_result
 

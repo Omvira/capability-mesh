@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -199,3 +200,254 @@ def test_client_can_call_standalone_server(dashboard_url):
     assert client.post_task(_task("task-2"))["ok"] is True
     routed = client.route_task(_task("task-2"), required_tools=["pytest"])
     assert routed["route"]["selected_node"] == "dash-node"
+
+
+def test_server_exposes_planning_step_for_node_tool_calls(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-plan"))
+
+    planned = _post_json(
+        f"{dashboard_url}/api/tasks/plan",
+        {
+            "task": _task("task-plan"),
+            "subtask": {
+                "objective": "Run only the dashboard tests",
+                "inputs": {"path": "tests/hermes_mesh/test_dashboard.py"},
+                "required_tools": ["pytest"],
+            },
+        },
+    )
+
+    assert planned["plan"]["action"] == "invoke_node"
+    assert planned["tool_call"]["parent_task_id"] == "task-plan"
+    assert planned["tool_call"]["objective"] == "Run only the dashboard tests"
+    assert planned["assignment"]["assignment_id"] == "task-plan-dash-node-call-1"
+    assert planned["assignment"]["tool_call_id"] == "task-plan-dash-node-call-1"
+
+    work = _get_json(f"{dashboard_url}/api/nodes/dash-node/assignments")
+    assert work[0]["task"]["task_id"] == "task-plan-dash-node-call-1"
+    assert work[0]["task"]["parent_task_id"] == "task-plan"
+    assert work[0]["task"]["objective"] == "Run only the dashboard tests"
+    assert "SECRET_TRANSPORT_COMMAND" not in json.dumps(planned)
+
+
+def test_server_exposes_mixed_plan_step_for_server_tool_calls(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-server-step"))
+
+    planned = _post_json(
+        f"{dashboard_url}/api/tasks/plan-step",
+        {
+            "task": _task("task-server-step"),
+            "requested_step": {
+                "kind": "server_tool_call",
+                "tool_name": "echo_sanitized",
+                "arguments": {
+                    "message": "server ok api_key=abc123",
+                },
+            },
+        },
+    )
+
+    assert planned["plan"]["action"] == "invoke_server_tool"
+    assert planned["tool_call"]["kind"] == "server_tool_call"
+    assert planned["tool_call"]["parent_task_id"] == "task-server-step"
+    assert planned["result_record"]["result"] == {"final_summary": "server ok api_key=[REDACTED]"}
+    body = json.dumps(planned)
+    assert "dispatch_command" not in body
+    assert "SECRET_TRANSPORT_COMMAND" not in body
+
+
+def test_server_plan_step_can_mix_server_then_node_without_private_leaks(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-mixed"))
+
+    server_step = _post_json(
+        f"{dashboard_url}/api/tasks/plan-step",
+        {
+            "task": _task("task-mixed"),
+            "requested_step": {
+                "kind": "server_tool_call",
+                "tool_name": "echo_sanitized",
+                "arguments": {"message": "prepare"},
+            },
+        },
+    )
+    node_step = _post_json(
+        f"{dashboard_url}/api/tasks/plan-step",
+        {
+            "task": _task("task-mixed"),
+            "requested_step": {
+                "kind": "node_tool_call",
+                "objective": "Run after server prepare",
+                "required_tools": ["pytest"],
+            },
+        },
+    )
+
+    assert server_step["tool_call"]["step_id"] == "task-mixed-server-echo_sanitized-call-1"
+    assert node_step["tool_call"]["tool_call_id"] == "task-mixed-dash-node-call-2"
+    assert node_step["assignment"]["parent_task_id"] == "task-mixed"
+    work = _get_json(f"{dashboard_url}/api/nodes/dash-node/assignments")
+    assert work[0]["task"]["task_id"] == "task-mixed-dash-node-call-2"
+    work_body = json.dumps(work)
+    assert "server_tool_call" not in work_body
+    assert "echo_sanitized" not in work_body
+    assert "SECRET_TRANSPORT_COMMAND" not in work_body
+
+
+def test_client_plan_step_uses_mixed_planning_endpoint(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    client = HermesMeshClient(dashboard_url)
+    client.post_task(_task("task-client-step"))
+
+    planned = client.plan_step(
+        _task("task-client-step"),
+        requested_step={"kind": "server_tool_call", "tool_name": "echo_sanitized", "arguments": {"message": "ok"}},
+    )
+
+    assert planned["plan"]["action"] == "invoke_server_tool"
+    assert planned["result_record"]["result"] == {"final_summary": "ok"}
+
+
+def test_client_plan_task_uses_planning_endpoint(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    client = HermesMeshClient(dashboard_url)
+    client.post_task(_task("task-client-plan"))
+
+    planned = client.plan_task(
+        _task("task-client-plan"),
+        subtask={"objective": "Run a focused subset", "required_tools": ["pytest"]},
+    )
+
+    assert planned["plan"]["action"] == "invoke_node"
+    assert planned["tool_call"]["objective"] == "Run a focused subset"
+
+
+def test_node_can_poll_claim_and_complete_assignment(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-orch"))
+    _post_json(f"{dashboard_url}/api/tasks/route", {"task": _task("task-orch"), "required_tools": ["pytest"]})
+
+    work = _get_json(f"{dashboard_url}/api/nodes/dash-node/assignments")
+    assert len(work) == 1
+    assert work[0]["assignment"]["assignment_id"] == "task-orch-dash-node"
+    assert work[0]["assignment"]["status"] == "auto_assigned"
+    assert work[0]["task"]["objective"] == "Run the unit tests"
+    assert "transport" not in json.dumps(work)
+    assert "SECRET_TRANSPORT_COMMAND" not in json.dumps(work)
+
+    claimed = _post_json(
+        f"{dashboard_url}/api/assignments/task-orch-dash-node/claim",
+        {"node_id": "dash-node"},
+    )
+    assert claimed["assignment"]["status"] == "claimed"
+
+    completed = _post_json(
+        f"{dashboard_url}/api/assignments/task-orch-dash-node/complete",
+        {
+            "node_id": "dash-node",
+            "result": {
+                "status": "completed",
+                "result": {
+                    "final_summary": "done password=abc123",
+                    "test_report": "1 passed",
+                    "environment_variables": {"TOKEN": "no"},
+                    "reasoning_trace": "private",
+                    "raw_private_logs": "private",
+                },
+            },
+        },
+    )
+    assert completed["decision"]["action"] == "completed"
+    assert completed["assignment"]["status"] == "completed"
+    assert completed["result_record"]["result"] == {
+        "final_summary": "done password=[REDACTED]",
+        "test_report": "1 passed",
+    }
+    assert completed["contribution"]["visibility"] == "local_private"
+
+
+def test_completion_routes_to_next_candidate_when_result_fails(tmp_path):
+    from hermes_mesh import build_default_capability_manifest
+    from hermes_mesh.dashboard import make_server
+
+    alpha = build_default_capability_manifest(
+        node_id="alpha-node",
+        display_name="Alpha",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+    )
+    beta = build_default_capability_manifest(
+        node_id="beta-node",
+        display_name="Beta",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+    )
+    alpha["policies"]["auto_accept_task_types"] = ["test_running"]
+    alpha["policies"]["requires_human_approval"] = False
+    beta["policies"]["auto_accept_task_types"] = ["test_running"]
+    beta["policies"]["requires_human_approval"] = False
+    from hermes_mesh import register_node_manifest
+
+    register_node_manifest(alpha, mesh_home=tmp_path)
+    register_node_manifest(beta, mesh_home=tmp_path)
+    server = make_server(port=0, mesh_home=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        _post_json(f"{url}/api/tasks", _task("task-route-next"))
+        routed = _post_json(f"{url}/api/tasks/route", {"task": _task("task-route-next")})
+        assert routed["assignment"]["node_id"] == "alpha-node"
+
+        completed = _post_json(
+            f"{url}/api/assignments/task-route-next-alpha-node/complete",
+            {"node_id": "alpha-node", "result": {"status": "failed", "result": {"final_summary": "failed"}}},
+        )
+        assert completed["decision"]["action"] == "route_next"
+        assert completed["decision"]["next_assignment"]["node_id"] == "beta-node"
+        assert _get_json(f"{url}/api/nodes/beta-node/assignments")[0]["assignment"]["assignment_id"] == "task-route-next-beta-node"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_client_run_next_assignment_dispatches_local_agent_and_completes(tmp_path):
+    from hermes_mesh import build_default_capability_manifest, register_node_manifest
+    from hermes_mesh.client import HermesMeshClient
+    from hermes_mesh.dashboard import make_server
+
+    manifest = build_default_capability_manifest(
+        node_id="agent-node",
+        display_name="Agent Node",
+        task_types=["test_running"],
+        tools_available=["python", "pytest"],
+        dispatch_command=[
+            sys.executable,
+            "-c",
+            "import json; print(json.dumps({'final_summary':'agent done token=abc123','test_report':'1 passed','environment_variables':{'TOKEN':'no'},'reasoning_trace':'private'}))",
+        ],
+    )
+    manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+    manifest["policies"]["requires_human_approval"] = False
+    register_node_manifest(manifest, mesh_home=tmp_path)
+
+    server = make_server(port=0, mesh_home=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HermesMeshClient(f"http://127.0.0.1:{server.server_port}")
+        assert client.post_task(_task("task-agent"))["ok"] is True
+        assert client.route_task(_task("task-agent"), required_tools=["pytest"])["assignment"]["node_id"] == "agent-node"
+
+        response = client.run_next_assignment(manifest)
+        assert response["decision"]["action"] == "completed"
+        assert response["result_record"]["result"] == {
+            "final_summary": "agent done token=[REDACTED]",
+            "test_report": "1 passed",
+        }
+        assert client.poll_assignments("agent-node") == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

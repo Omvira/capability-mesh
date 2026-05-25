@@ -14,12 +14,17 @@ from urllib.parse import unquote, urlsplit
 from hermes_mesh.core import (
     CapabilityMeshValidationError,
     build_task_assignment,
+    claim_task_assignment,
+    complete_task_assignment,
     default_mesh_home,
+    execute_plan_step,
     get_registered_node,
+    list_node_assignments,
     list_posted_tasks,
     list_registered_nodes,
     list_task_assignments,
     list_task_results,
+    plan_next_node_call,
     post_task,
     record_task_assignment,
     record_task_result,
@@ -352,9 +357,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/nodes":
                 self._send_json(public_nodes(self.mesh_home))
             elif path.startswith("/api/nodes/"):
-                node_id = unquote(path.removeprefix("/api/nodes/"))
-                node = get_registered_node(node_id, mesh_home=self.mesh_home)
-                self._send_json(public_node_view(node))
+                suffix = path.removeprefix("/api/nodes/")
+                if suffix.endswith("/assignments"):
+                    node_id = unquote(suffix.removesuffix("/assignments"))
+                    get_registered_node(node_id, mesh_home=self.mesh_home)
+                    self._send_json(list_node_assignments(node_id, mesh_home=self.mesh_home))
+                else:
+                    node_id = unquote(suffix)
+                    node = get_registered_node(node_id, mesh_home=self.mesh_home)
+                    self._send_json(public_node_view(node))
             elif path == "/api/tasks":
                 self._send_json(list_posted_tasks(self.mesh_home))
             elif path == "/api/assignments":
@@ -393,9 +404,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     response["assignment"] = assignment
                     response["path"] = str(saved)
                 self._send_json(response)
+            elif path == "/api/tasks/plan":
+                task = data.get("task", data)
+                subtask = data.get("subtask")
+                validated_task = validate_task_contract(task)
+                plan = plan_next_node_call(
+                    validated_task,
+                    list_registered_nodes(self.mesh_home),
+                    subtask=subtask,
+                )
+                response = {"plan": plan}
+                if plan.get("action") == "invoke_node":
+                    assignment = plan["assignment"]
+                    saved = record_task_assignment(assignment, mesh_home=self.mesh_home)
+                    response["tool_call"] = plan["tool_call"]
+                    response["assignment"] = assignment
+                    response["path"] = str(saved)
+                self._send_json(response)
+            elif path == "/api/tasks/plan-step":
+                task = data.get("task", data)
+                requested_step = data.get("requested_step") or data.get("step")
+                validated_task = validate_task_contract(task)
+                plan = execute_plan_step(
+                    validated_task,
+                    list_registered_nodes(self.mesh_home),
+                    requested_step=requested_step,
+                    mesh_home=self.mesh_home,
+                )
+                response = {"plan": plan}
+                if plan.get("action") in {"invoke_server_tool", "invoke_node"}:
+                    response["tool_call"] = plan.get("tool_call")
+                if plan.get("assignment") is not None:
+                    response["assignment"] = plan["assignment"]
+                if plan.get("result_record") is not None:
+                    response["result_record"] = plan["result_record"]
+                self._send_json(response)
             elif path == "/api/assignments":
                 saved = record_task_assignment(data, mesh_home=self.mesh_home)
                 self._send_json({"ok": True, "path": str(saved), "assignment_id": data.get("assignment_id")})
+            elif path.startswith("/api/assignments/") and path.endswith("/claim"):
+                assignment_id = unquote(path.removeprefix("/api/assignments/").removesuffix("/claim"))
+                node_id = data.get("node_id")
+                if not isinstance(node_id, str) or not node_id.strip():
+                    raise CapabilityMeshValidationError("node_id is required")
+                assignment = claim_task_assignment(assignment_id, node_id, mesh_home=self.mesh_home)
+                self._send_json({"ok": True, "assignment": assignment})
+            elif path.startswith("/api/assignments/") and path.endswith("/complete"):
+                assignment_id = unquote(path.removeprefix("/api/assignments/").removesuffix("/complete"))
+                node_id = data.get("node_id")
+                if not isinstance(node_id, str) or not node_id.strip():
+                    raise CapabilityMeshValidationError("node_id is required")
+                completion = complete_task_assignment(
+                    assignment_id,
+                    node_id,
+                    data.get("result", data),
+                    mesh_home=self.mesh_home,
+                )
+                self._send_json({"ok": True, **completion})
             elif path == "/api/results":
                 task = data.get("task") or data.get("contract")
                 result = data.get("result", data)

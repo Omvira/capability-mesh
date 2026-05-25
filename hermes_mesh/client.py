@@ -9,6 +9,7 @@ from urllib.parse import quote, urljoin
 
 from hermes_mesh.core import (
     CapabilityMeshValidationError,
+    build_dispatch_result,
     filter_task_result,
     validate_capability_manifest,
     validate_task_contract,
@@ -123,6 +124,46 @@ class HermesMeshClient:
             raise HermesMeshClientError("route endpoint returned a list")
         return data
 
+    def plan_task(
+        self,
+        task: Mapping[str, Any],
+        *,
+        subtask: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"task": validate_task_contract(task)}
+        if subtask is not None:
+            payload["subtask"] = dict(subtask)
+        data = _json_request(
+            self.base_url,
+            "/api/tasks/plan",
+            method="POST",
+            payload=payload,
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("plan endpoint returned a list")
+        return data
+
+    def plan_step(
+        self,
+        task: Mapping[str, Any],
+        *,
+        requested_step: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"task": validate_task_contract(task)}
+        if requested_step is not None:
+            payload["requested_step"] = dict(requested_step)
+        data = _json_request(
+            self.base_url,
+            "/api/tasks/plan-step",
+            method="POST",
+            payload=payload,
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("plan-step endpoint returned a list")
+        return data
+
     def record_result(self, result: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
         contract = validate_task_contract(task)
         payload = {"result": filter_task_result(result, contract), "task": contract}
@@ -138,3 +179,57 @@ class HermesMeshClient:
         if "record" in data and isinstance(data["record"], dict):
             validate_task_result_record(data["record"])
         return data
+
+    def poll_assignments(self, node_id: str) -> list[dict[str, Any]]:
+        data = _json_request(
+            self.base_url,
+            f"/api/nodes/{quote(node_id)}/assignments",
+            timeout=self.timeout,
+        )
+        if not isinstance(data, list):
+            raise HermesMeshClientError("node assignments endpoint returned a non-list")
+        return [dict(item) for item in data]
+
+    def claim_assignment(self, assignment_id: str, node_id: str) -> dict[str, Any]:
+        data = _json_request(
+            self.base_url,
+            f"/api/assignments/{quote(assignment_id)}/claim",
+            method="POST",
+            payload={"node_id": node_id},
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("claim endpoint returned a list")
+        return data
+
+    def complete_assignment(
+        self,
+        assignment_id: str,
+        node_id: str,
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        data = _json_request(
+            self.base_url,
+            f"/api/assignments/{quote(assignment_id)}/complete",
+            method="POST",
+            payload={"node_id": node_id, "result": dict(result)},
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("complete endpoint returned a list")
+        return data
+
+    def run_next_assignment(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
+        node = validate_capability_manifest(manifest)
+        work = self.poll_assignments(str(node["node_id"]))
+        if not work:
+            return {"ok": True, "status": "idle", "node_id": node["node_id"]}
+        item = work[0]
+        assignment = item.get("assignment")
+        task = item.get("task")
+        if not isinstance(assignment, dict) or not isinstance(task, dict):
+            raise HermesMeshClientError("assignment work item is malformed")
+        assignment_id = str(assignment.get("assignment_id"))
+        self.claim_assignment(assignment_id, str(node["node_id"]))
+        result = build_dispatch_result(node, validate_task_contract(task))
+        return self.complete_assignment(assignment_id, str(node["node_id"]), result)
