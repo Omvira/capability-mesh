@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-mesh"
+version = "0.1.0"
+description = "Independent privacy-first capability mesh core"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nous Research" }]
+license = { text = "MIT" }
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+hermes-mesh = "hermes_mesh.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hermes_mesh", "hermes_mesh.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
