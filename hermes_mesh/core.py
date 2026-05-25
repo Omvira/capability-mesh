@@ -38,6 +38,10 @@ DEFAULT_FORBIDDEN_RESULT_FIELDS = [
     "local_skills",
 ]
 
+TASK_ASSIGNMENT_STATUSES = {"auto_assigned", "awaiting_node_approval", "declined", "completed", "failed"}
+TASK_RESULT_STATUSES = {"completed", "failed"}
+CONTRIBUTION_VISIBILITIES = {"none", "local_private", "team_registry", "public_commons"}
+
 PRIVATE_PRIVACY_FLAGS = {
     "expose_local_skills": False,
     "expose_memory": False,
@@ -283,6 +287,53 @@ def capability_mesh_nodes_dir(mesh_home: str | Path | None = None) -> Path:
     return base / "nodes"
 
 
+def _mesh_registry_dir(name: str, mesh_home: str | Path | None = None) -> Path:
+    base = Path(mesh_home).expanduser() if mesh_home is not None else default_mesh_home()
+    return base / name
+
+
+def _safe_record_id(value: Any, field: str) -> str:
+    _require_non_empty_string(value, field)
+    text = str(value)
+    if not _SAFE_NODE_ID.fullmatch(text):
+        raise CapabilityMeshValidationError(
+            f"{field} may only contain letters, numbers, dots, underscores, and hyphens"
+        )
+    return text
+
+
+def _write_registry_record(
+    dirname: str,
+    record_id: str,
+    data: Mapping[str, Any],
+    mesh_home: str | Path | None = None,
+) -> Path:
+    path_id = _safe_record_id(record_id, "record_id")
+    registry_dir = _mesh_registry_dir(dirname, mesh_home)
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    path = registry_dir / f"{path_id}.yaml"
+    path.write_text(
+        yaml.safe_dump(dict(data), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _list_registry_records(
+    dirname: str,
+    validator: Any,
+    mesh_home: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    registry_dir = _mesh_registry_dir(dirname, mesh_home)
+    if not registry_dir.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(registry_dir.glob("*.yaml")):
+        with path.open("r", encoding="utf-8") as f:
+            records.append(validator(yaml.safe_load(f) or {}))
+    return records
+
+
 def register_node_manifest(manifest: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
     """Validate and persist a node manifest in the local file registry."""
 
@@ -319,6 +370,62 @@ def get_registered_node(node_id: str, mesh_home: str | Path | None = None) -> di
         if node.get("node_id") == node_id:
             return node
     raise CapabilityMeshValidationError(f"unknown node_id: {node_id}")
+
+
+def post_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
+    """Validate and persist a task post in the local registry."""
+
+    validated = validate_task_post(task)
+    return _write_registry_record("tasks", validated["task_id"], validated, mesh_home)
+
+
+def list_posted_tasks(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return validated task posts from the local registry."""
+
+    return _list_registry_records("tasks", validate_task_post, mesh_home)
+
+
+def record_task_assignment(assignment: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
+    """Persist a validated local task assignment."""
+
+    validated = validate_task_assignment(assignment)
+    return _write_registry_record("assignments", validated["assignment_id"], validated, mesh_home)
+
+
+def list_task_assignments(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return validated local task assignments."""
+
+    return _list_registry_records("assignments", validate_task_assignment, mesh_home)
+
+
+def record_task_result(
+    result: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    mesh_home: str | Path | None = None,
+) -> Path:
+    """Build, privacy-filter, validate, and persist a task result record."""
+
+    record = build_task_result_record(result, contract)
+    return _write_registry_record("results", record["result_id"], record, mesh_home)
+
+
+def list_task_results(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return validated task result records."""
+
+    return _list_registry_records("results", validate_task_result_record, mesh_home)
+
+
+def record_contribution(contribution: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
+    """Persist an explicit contribution record in the local registry."""
+
+    validated = validate_contribution_record(contribution)
+    return _write_registry_record("contributions", validated["contribution_id"], validated, mesh_home)
+
+
+def list_contribution_records(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return validated contribution records."""
+
+    return _list_registry_records("contributions", validate_contribution_record, mesh_home)
 
 
 def _transport_command(transport: Mapping[str, Any]) -> list[str]:
@@ -404,6 +511,192 @@ def validate_task_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
     if expected_fields is not None:
         _require_non_empty_string_list(expected_fields, "expected_fields")
     return copy.deepcopy(dict(contract))
+
+
+def validate_task_post(post: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a posted task contract with privacy-preserving defaults."""
+
+    validated = validate_task_contract(post)
+    submitter = validated.get("submitter")
+    if submitter is not None:
+        _require_non_empty_string(submitter, "submitter")
+    if validated.get("required_tools") is not None:
+        _require_non_empty_string_list(validated["required_tools"], "required_tools")
+    return validated
+
+
+def validate_task_assignment(assignment: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a local task assignment routing decision."""
+
+    assignment = _require_mapping(assignment, "assignment")
+    _require_schema_version(assignment)
+    for field in ("assignment_id", "task_id", "task_type", "node_id", "status", "reason"):
+        _require_non_empty_string(assignment.get(field), field)
+    _safe_record_id(assignment["assignment_id"], "assignment_id")
+    if assignment["status"] not in TASK_ASSIGNMENT_STATUSES:
+        raise CapabilityMeshValidationError(
+            "status must be one of: " + ", ".join(sorted(TASK_ASSIGNMENT_STATUSES))
+        )
+    candidates = assignment.get("candidates", [])
+    if candidates != []:
+        _require_non_empty_string_list(candidates, "candidates")
+    return copy.deepcopy(dict(assignment))
+
+
+def validate_task_result_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a stored, privacy-filtered task result record."""
+
+    record = _require_mapping(record, "task_result")
+    _require_schema_version(record)
+    for field in ("result_id", "task_id", "node_id", "status"):
+        _require_non_empty_string(record.get(field), field)
+    _safe_record_id(record["result_id"], "result_id")
+    if record["status"] not in TASK_RESULT_STATUSES:
+        raise CapabilityMeshValidationError(
+            "status must be one of: " + ", ".join(sorted(TASK_RESULT_STATUSES))
+        )
+    _require_mapping(record.get("result"), "result")
+    if record.get("verification_report") is not None:
+        validate_verification_report(record["verification_report"])
+    return copy.deepcopy(dict(record))
+
+
+def validate_contribution_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an explicit contribution record without adding reward semantics."""
+
+    record = _require_mapping(record, "contribution_record")
+    _require_schema_version(record)
+    for field in ("contribution_id", "task_id", "node_id", "summary", "visibility"):
+        _require_non_empty_string(record.get(field), field)
+    _safe_record_id(record["contribution_id"], "contribution_id")
+    if record["visibility"] not in CONTRIBUTION_VISIBILITIES:
+        raise CapabilityMeshValidationError(
+            "visibility must be one of: " + ", ".join(sorted(CONTRIBUTION_VISIBILITIES))
+        )
+    if record["visibility"] in PUBLIC_SKILL_VISIBILITIES:
+        if record.get("human_consent") is not True:
+            raise CapabilityMeshValidationError(
+                "human_consent is required for team/public contribution records"
+            )
+        _require_non_empty_string(record.get("human_review_note"), "human_review_note")
+    else:
+        human_consent = record.get("human_consent", False)
+        if human_consent not in {True, False}:
+            raise CapabilityMeshValidationError("human_consent must be boolean")
+    verification = record.get("verification_report")
+    if verification is not None:
+        validate_verification_report(verification)
+    return copy.deepcopy(dict(record))
+
+
+def route_task(
+    contract: Mapping[str, Any],
+    manifests: list[Mapping[str, Any]],
+    required_tools: list[str] | None = None,
+) -> dict[str, Any]:
+    """Deterministically route a task to a capable manifest without dispatching it."""
+
+    validated_contract = validate_task_post(contract)
+    if required_tools is None:
+        required_tools = list(validated_contract.get("required_tools", []))
+    elif required_tools:
+        _require_non_empty_string_list(required_tools, "required_tools")
+    required_tool_set = set(required_tools or [])
+
+    candidates: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for manifest in manifests:
+        node = validate_capability_manifest(manifest)
+        node_id = node["node_id"]
+        capabilities = node["capabilities"]
+        policies = node["policies"]
+        if policies.get("accepts_tasks") is not True:
+            reasons.append(f"{node_id}: does not accept tasks")
+            continue
+        if validated_contract["task_type"] not in capabilities.get("task_types", []):
+            reasons.append(f"{node_id}: task_type not declared")
+            continue
+        tools_available = set(capabilities.get("tools_available", []))
+        missing_tools = sorted(required_tool_set - tools_available)
+        if missing_tools:
+            reasons.append(f"{node_id}: missing tools {', '.join(missing_tools)}")
+            continue
+        candidates.append(node)
+
+    candidates.sort(key=lambda item: item["node_id"])
+    candidate_ids = [node["node_id"] for node in candidates]
+    if not candidates:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "task_id": validated_contract["task_id"],
+            "task_type": validated_contract["task_type"],
+            "status": "no_match",
+            "selected_node": None,
+            "candidates": [],
+            "reason": "; ".join(reasons) or "no manifests available",
+        }
+
+    selected = candidates[0]
+    auto_accept = validated_contract["task_type"] in selected["policies"].get(
+        "auto_accept_task_types", []
+    )
+    status = "auto_assigned" if auto_accept else "awaiting_node_approval"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "task_id": validated_contract["task_id"],
+        "task_type": validated_contract["task_type"],
+        "status": status,
+        "selected_node": selected["node_id"],
+        "candidates": candidate_ids,
+        "reason": "selected lowest node_id among matching candidates",
+    }
+
+
+def build_task_assignment(contract: Mapping[str, Any], route: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a persisted assignment from a route_task decision."""
+
+    validated_contract = validate_task_post(contract)
+    route_data = _require_mapping(route, "route")
+    selected_node = route_data.get("selected_node")
+    _require_non_empty_string(selected_node, "selected_node")
+    assignment = {
+        "schema_version": SCHEMA_VERSION,
+        "assignment_id": f"{validated_contract['task_id']}-{selected_node}",
+        "task_id": validated_contract["task_id"],
+        "task_type": validated_contract["task_type"],
+        "node_id": selected_node,
+        "status": route_data.get("status"),
+        "candidates": list(route_data.get("candidates", [])),
+        "reason": route_data.get("reason", "routed locally"),
+    }
+    return validate_task_assignment(assignment)
+
+
+def build_task_result_record(result: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a privacy-filtered result record from raw node output."""
+
+    raw = _require_mapping(result, "result")
+    validated_contract = validate_task_post(contract)
+    _require_non_empty_string(raw.get("node_id"), "node_id")
+    status = raw.get("status", "completed")
+    if status not in TASK_RESULT_STATUSES:
+        raise CapabilityMeshValidationError(
+            "status must be one of: " + ", ".join(sorted(TASK_RESULT_STATUSES))
+        )
+    payload = raw.get("result", raw)
+    filtered = filter_task_result(_require_mapping(payload, "result"), validated_contract)
+    report = build_verification_report(filtered, validated_contract)
+    return validate_task_result_record(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "result_id": str(raw.get("result_id") or f"{validated_contract['task_id']}-{raw['node_id']}-result"),
+            "task_id": validated_contract["task_id"],
+            "node_id": raw["node_id"],
+            "status": status,
+            "result": filtered,
+            "verification_report": report,
+        }
+    )
 
 
 def build_dispatch_prompt(contract: Mapping[str, Any]) -> str:

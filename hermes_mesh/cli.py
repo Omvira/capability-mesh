@@ -16,15 +16,26 @@ import yaml
 
 from hermes_mesh.core import (
     CapabilityMeshValidationError,
+    SCHEMA_VERSION,
+    build_task_assignment,
     build_default_capability_manifest,
     default_mesh_home,
     filter_task_result,
+    list_contribution_records,
+    list_posted_tasks,
     list_registered_nodes,
+    post_task,
+    record_contribution,
+    record_task_assignment,
+    record_task_result,
     register_node_manifest,
+    route_task,
     validate_capability_manifest,
     validate_optional_skill_proposal,
     validate_task_contract,
 )
+from hermes_mesh.client import HermesMeshClient, HermesMeshClientError
+from hermes_mesh.dashboard import serve_dashboard
 
 
 def _load_yaml_or_json(path: str | Path) -> dict[str, Any]:
@@ -97,6 +108,52 @@ def build_parser() -> argparse.ArgumentParser:
     filter_result.add_argument("--output", "-o")
     filter_result.set_defaults(func=cmd_filter_result)
 
+    post = sub.add_parser("post-task", help="Post a task contract to the local registry")
+    post.add_argument("task_path")
+    post.set_defaults(func=cmd_post_task)
+
+    route = sub.add_parser("route-task", help="Route a posted task to registered nodes")
+    route.add_argument("task_path")
+    route.add_argument("--required-tool", action="append", dest="required_tools")
+    route.add_argument("--json", action="store_true")
+    route.set_defaults(func=cmd_route_task)
+
+    record = sub.add_parser("record-result", help="Record a privacy-filtered task result")
+    record.add_argument("result_path")
+    record.set_defaults(func=cmd_record_result)
+
+    contributions = sub.add_parser("contributions", help="List local contribution records")
+    contributions.add_argument("--json", action="store_true")
+    contributions.set_defaults(func=cmd_contributions)
+
+    server = sub.add_parser("server", help="Run the HermesMesh HTTP service and dashboard")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8765)
+    server.set_defaults(func=cmd_server)
+
+    dashboard = sub.add_parser("dashboard", help="Alias for server")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.set_defaults(func=cmd_server)
+
+    client = sub.add_parser("client", help="Call a running HermesMesh service")
+    client.add_argument("--url", required=True, help="HermesMesh service base URL")
+    client_sub = client.add_subparsers(dest="client_command")
+    client_health = client_sub.add_parser("health", help="Check service health")
+    client_health.set_defaults(func=cmd_client_health)
+    client_nodes = client_sub.add_parser("nodes", help="List service nodes")
+    client_nodes.set_defaults(func=cmd_client_nodes)
+    client_register = client_sub.add_parser("register", help="Register a node manifest with the service")
+    client_register.add_argument("path")
+    client_register.set_defaults(func=cmd_client_register)
+    client_post = client_sub.add_parser("post-task", help="Post a task to the service")
+    client_post.add_argument("task_path")
+    client_post.set_defaults(func=cmd_client_post_task)
+    client_route = client_sub.add_parser("route-task", help="Route a task through the service")
+    client_route.add_argument("task_path")
+    client_route.add_argument("--required-tool", action="append", dest="required_tools")
+    client_route.set_defaults(func=cmd_client_route_task)
+
     return parser
 
 
@@ -152,15 +209,129 @@ def cmd_filter_result(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_post_task(args: argparse.Namespace) -> int:
+    task = _load_yaml_or_json(args.task_path)
+    path = post_task(task, mesh_home=_mesh_home(args))
+    print(f"Posted {task.get('task_id')} at {path}")
+    return 0
+
+
+def cmd_route_task(args: argparse.Namespace) -> int:
+    task = _load_yaml_or_json(args.task_path)
+    route = route_task(
+        task,
+        list_registered_nodes(mesh_home=_mesh_home(args)),
+        required_tools=args.required_tools,
+    )
+    if route.get("selected_node"):
+        assignment = build_task_assignment(task, route)
+        record_task_assignment(assignment, mesh_home=_mesh_home(args))
+    if args.json:
+        _write_json_or_stdout(route)
+        return 0
+    print(f"{route['status']}: {route.get('selected_node') or 'no node'}")
+    print(route["reason"])
+    return 0
+
+
+def _find_posted_task(task_id: str, mesh_home: Path) -> dict[str, Any]:
+    for task in list_posted_tasks(mesh_home=mesh_home):
+        if task.get("task_id") == task_id:
+            return task
+    raise CapabilityMeshValidationError(f"unknown posted task_id: {task_id}")
+
+
+def cmd_record_result(args: argparse.Namespace) -> int:
+    raw_result = _load_yaml_or_json(args.result_path)
+    task_id = raw_result.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise CapabilityMeshValidationError("result task_id is required")
+    mesh_home = _mesh_home(args)
+    task = _find_posted_task(task_id, mesh_home)
+    path = record_task_result(raw_result, task, mesh_home=mesh_home)
+    records = [record for record in list_contribution_records(mesh_home=mesh_home) if record.get("task_id") == task_id]
+    if not records:
+        node_id = raw_result.get("node_id")
+        if isinstance(node_id, str) and node_id.strip():
+            record_contribution(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "contribution_id": f"{task_id}-{node_id}-contribution",
+                    "task_id": task_id,
+                    "node_id": node_id,
+                    "summary": "Local task result recorded",
+                    "visibility": "local_private",
+                    "human_consent": False,
+                },
+                mesh_home=mesh_home,
+            )
+    print(f"Recorded result at {path}")
+    return 0
+
+
+def cmd_contributions(args: argparse.Namespace) -> int:
+    records = list_contribution_records(mesh_home=_mesh_home(args))
+    if args.json:
+        _write_json_or_stdout(records)
+        return 0
+    if not records:
+        print("No contribution records.")
+        return 0
+    for record in records:
+        print(f"{record['contribution_id']}\t{record['task_id']}\t{record['node_id']}\t{record['visibility']}")
+    return 0
+
+
+def cmd_server(args: argparse.Namespace) -> int:
+    serve_dashboard(host=args.host, port=args.port, mesh_home=_mesh_home(args))
+    return 0
+
+
+def _client(args: argparse.Namespace) -> HermesMeshClient:
+    return HermesMeshClient(args.url)
+
+
+def cmd_client_health(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).health())
+    return 0
+
+
+def cmd_client_nodes(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).list_nodes())
+    return 0
+
+
+def cmd_client_register(args: argparse.Namespace) -> int:
+    manifest = _load_yaml_or_json(args.path)
+    _write_json_or_stdout(_client(args).register_node(manifest))
+    return 0
+
+
+def cmd_client_post_task(args: argparse.Namespace) -> int:
+    task = _load_yaml_or_json(args.task_path)
+    _write_json_or_stdout(_client(args).post_task(task))
+    return 0
+
+
+def cmd_client_route_task(args: argparse.Namespace) -> int:
+    task = _load_yaml_or_json(args.task_path)
+    _write_json_or_stdout(_client(args).route_task(task, required_tools=args.required_tools or None))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
         parser.print_help()
         return 2
+    if args.command == "client" and not getattr(args, "client_command", None):
+        client_parser = build_parser()
+        client_parser.parse_args(["client", "--url", args.url, "--help"])
+        return 2
     try:
         return args.func(args)
-    except (CapabilityMeshValidationError, OSError, yaml.YAMLError) as exc:
+    except (CapabilityMeshValidationError, HermesMeshClientError, OSError, yaml.YAMLError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
