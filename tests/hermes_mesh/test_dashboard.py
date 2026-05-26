@@ -136,6 +136,62 @@ def test_dashboard_html_includes_registered_nodes_and_capabilities(dashboard_url
     assert "requires_human_approval: false" in html
 
 
+def test_dashboard_html_renders_kanban_columns_and_public_cards(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-board"))
+    _post_json(f"{dashboard_url}/api/tasks/route", {"task": _task("task-board"), "required_tools": ["pytest"]})
+    _post_json(
+        f"{dashboard_url}/api/results",
+        {
+            "task": _task("task-board"),
+            "result": {
+                "task_id": "task-board",
+                "node_id": "dash-node",
+                "status": "completed",
+                "result": {
+                    "final_summary": "board ok password=SECRET",
+                    "test_report": "passed",
+                    "raw_private_logs": "hidden",
+                },
+            },
+        },
+    )
+
+    html = _get_text(f"{dashboard_url}/")
+
+    assert "mesh-kanban" in html
+    assert "Posted" in html
+    assert "Assigned" in html
+    assert "Completed" in html
+    assert "task-board" in html
+    assert "dash-node" in html
+    assert "board ok password=[REDACTED]" in html
+    assert "raw_private_logs" not in html
+    assert "do not expose" not in html
+
+
+def test_dashboard_board_api_returns_kanban_shape_without_private_transport(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-board-api"))
+    _post_json(f"{dashboard_url}/api/tasks/route", {"task": _task("task-board-api"), "required_tools": ["pytest"]})
+
+    board = _get_json(f"{dashboard_url}/api/board")
+
+    assert [column["id"] for column in board["columns"]] == [
+        "posted",
+        "assigned",
+        "claimed",
+        "completed",
+        "failed",
+        "results",
+    ]
+    assigned = next(column for column in board["columns"] if column["id"] == "assigned")
+    assert assigned["cards"][0]["id"] == "task-board-api-dash-node"
+    body = json.dumps(board)
+    assert "SECRET_TRANSPORT_COMMAND" not in body
+    assert "/usr/bin/private-runner" not in body
+    assert "dispatch_command" not in body
+    assert "raw_private_logs" not in body
+
+
 def test_dashboard_returns_404_for_unknown_node(dashboard_url):
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         _get_json(f"{dashboard_url}/api/nodes/missing-node")

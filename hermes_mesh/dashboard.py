@@ -100,7 +100,151 @@ def _stat_value(value: Any) -> str:
     return html.escape(str(value))
 
 
-def render_dashboard(nodes: list[dict[str, Any]]) -> str:
+
+def _count_by_status(records: list[Mapping[str, Any]], key: str = "status") -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        status = str(record.get(key) or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _safe_text(value: Any, max_len: int = 180) -> str:
+    text = "" if value is None else str(value)
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
+
+def _card_html(card: Mapping[str, Any]) -> str:
+    chips = "".join(
+        f'<span class="mini-chip">{html.escape(str(chip))}</span>'
+        for chip in card.get("chips", [])
+        if chip is not None and str(chip) != ""
+    )
+    meta = "".join(
+        "<li>"
+        f"<span>{html.escape(str(key))}</span>"
+        f"<strong>{html.escape(_safe_text(value, 80))}</strong>"
+        "</li>"
+        for key, value in card.get("meta", {}).items()
+        if value is not None and value != ""
+    )
+    summary = card.get("summary")
+    summary_html = f'<p class="kanban-summary">{html.escape(_safe_text(summary))}</p>' if summary else ""
+    return (
+        '<article class="kanban-card">'
+        '<div class="kanban-card__top">'
+        f'<span class="kanban-card__type">{html.escape(str(card.get("type", "card")))}</span>'
+        f'<span class="kanban-card__status">{html.escape(str(card.get("status", "unknown")))}</span>'
+        '</div>'
+        f'<h3>{html.escape(_safe_text(card.get("title") or card.get("id"), 120))}</h3>'
+        f'<p class="kanban-id">{html.escape(str(card.get("id", "")))}</p>'
+        f'{summary_html}'
+        f'<div class="mini-chip-row">{chips}</div>'
+        f'<ul class="kanban-meta">{meta}</ul>'
+        '</article>'
+    )
+
+
+def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Return a dashboard-safe Hermes-style Kanban board projection."""
+
+    tasks = list_posted_tasks(mesh_home)
+    assignments = list_task_assignments(mesh_home)
+    results = list_task_results(mesh_home)
+    columns: list[dict[str, Any]] = [
+        {"id": "posted", "title": "Posted", "cards": []},
+        {"id": "assigned", "title": "Assigned", "cards": []},
+        {"id": "claimed", "title": "Claimed", "cards": []},
+        {"id": "completed", "title": "Completed", "cards": []},
+        {"id": "failed", "title": "Failed", "cards": []},
+        {"id": "results", "title": "Results", "cards": []},
+    ]
+    by_id = {column["id"]: column for column in columns}
+    assigned_task_ids = {str(item.get("task_id")) for item in assignments}
+    result_task_ids = {str(item.get("task_id")) for item in results}
+
+    for task in tasks:
+        task_id = str(task.get("task_id", ""))
+        if task_id in assigned_task_ids or task_id in result_task_ids:
+            continue
+        by_id["posted"]["cards"].append(
+            {
+                "id": task_id,
+                "type": "task",
+                "status": "posted",
+                "title": task.get("objective") or task_id,
+                "chips": [task.get("task_type"), *(task.get("required_tools") or [])],
+                "meta": {"task_type": task.get("task_type"), "tools": ", ".join(task.get("required_tools") or [])},
+            }
+        )
+
+    for assignment in assignments:
+        status = str(assignment.get("status") or "assigned")
+        column_id = "claimed" if status == "claimed" else "completed" if status == "completed" else "failed" if status == "failed" else "assigned"
+        tool_call = assignment.get("tool_call") if isinstance(assignment.get("tool_call"), Mapping) else {}
+        by_id[column_id]["cards"].append(
+            {
+                "id": assignment.get("assignment_id"),
+                "type": "assignment",
+                "status": status,
+                "title": tool_call.get("objective") or assignment.get("task_id"),
+                "chips": [assignment.get("node_id"), assignment.get("tool_call_id")],
+                "meta": {
+                    "node": assignment.get("node_id"),
+                    "task": assignment.get("task_id"),
+                    "tool_call": assignment.get("tool_call_id"),
+                },
+            }
+        )
+
+    for result in results:
+        payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        summary = payload.get("final_summary") or payload.get("test_report") or payload.get("summary")
+        by_id["results"]["cards"].append(
+            {
+                "id": result.get("result_id"),
+                "type": "result",
+                "status": result.get("status"),
+                "title": result.get("task_id"),
+                "summary": summary,
+                "chips": [result.get("node_id"), result.get("status")],
+                "meta": {"task": result.get("task_id"), "node": result.get("node_id")},
+            }
+        )
+
+    for column in columns:
+        column["count"] = len(column["cards"])
+    return {
+        "columns": columns,
+        "summary": {
+            "tasks": len(tasks),
+            "assignments": len(assignments),
+            "results": len(results),
+            "assignment_status": _count_by_status(assignments),
+            "result_status": _count_by_status(results),
+        },
+    }
+
+
+def _render_kanban_board(board: Mapping[str, Any]) -> str:
+    rendered_columns = []
+    for column in board.get("columns", []):
+        cards = "".join(_card_html(card) for card in column.get("cards", [])) or '<p class="kanban-empty">No cards</p>'
+        rendered_columns.append(
+            '<section class="kanban-column">'
+            '<div class="kanban-column__header">'
+            f'<h2>{html.escape(str(column.get("title", column.get("id"))))}</h2>'
+            f'<span>{html.escape(str(column.get("count", 0)))}</span>'
+            '</div>'
+            f'<div class="kanban-column__cards">{cards}</div>'
+            '</section>'
+        )
+    return "".join(rendered_columns)
+
+def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | None = None) -> str:
+    board = board or {"columns": [], "summary": {}}
     node_count = len(nodes)
     task_type_count = len({task for node in nodes for task in node.get("task_types", [])})
     tool_count = len({tool for node in nodes for tool in node.get("tools_available", [])})
@@ -292,6 +436,28 @@ def render_dashboard(nodes: list[dict[str, Any]]) -> str:
     .empty-state h2 {{ margin: 0; font-size: clamp(26px, 4vw, 48px); letter-spacing: -.05em; }}
     .empty-state p:not(.eyebrow) {{ max-width: 700px; color: var(--soft); }}
     code {{ font-family: var(--mono); color: var(--accent); }}
+
+    .mesh-kanban {{ margin: 22px 0; }}
+    .section-heading {{ display: flex; justify-content: space-between; gap: 16px; align-items: end; margin: 28px 0 14px; }}
+    .section-heading h2 {{ margin: 0; font-size: clamp(25px, 4vw, 42px); letter-spacing: -.05em; }}
+    .section-heading p {{ margin: 6px 0 0; color: var(--muted); max-width: 760px; }}
+    .kanban-board {{ display: grid; grid-template-columns: repeat(6, minmax(220px, 1fr)); gap: 14px; overflow-x: auto; padding-bottom: 8px; }}
+    .kanban-column {{ min-width: 220px; border: 1px solid var(--line); border-radius: 22px; background: rgba(8, 13, 26, .72); box-shadow: 0 12px 36px rgba(0,0,0,.18); }}
+    .kanban-column__header {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 15px; border-bottom: 1px solid var(--line); }}
+    .kanban-column__header h2 {{ margin: 0; font-size: 15px; letter-spacing: -.02em; }}
+    .kanban-column__header span {{ display: inline-flex; min-width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--soft); font: 800 12px/1 var(--mono); }}
+    .kanban-column__cards {{ display: grid; gap: 10px; padding: 12px; }}
+    .kanban-card {{ border: 1px solid rgba(148,163,184,.18); border-radius: 18px; background: rgba(15,23,42,.82); padding: 13px; }}
+    .kanban-card__top {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font: 800 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }}
+    .kanban-card h3 {{ margin: 11px 0 6px; color: var(--fg); font: 800 15px/1.22 var(--sans); letter-spacing: -.02em; text-transform: none; }}
+    .kanban-id {{ margin: 0 0 8px; color: var(--muted); font: 11px/1.35 var(--mono); overflow-wrap: anywhere; }}
+    .kanban-summary {{ margin: 8px 0; color: var(--soft); font-size: 13px; }}
+    .mini-chip-row {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }}
+    .mini-chip {{ border: 1px solid rgba(121,242,192,.22); border-radius: 999px; padding: 4px 7px; color: #dffced; background: rgba(121,242,192,.07); font: 700 10px/1 var(--mono); }}
+    .kanban-meta {{ display: grid; gap: 5px; margin-top: 10px; }}
+    .kanban-meta li {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }}
+    .kanban-meta strong {{ color: var(--soft); text-align: right; overflow-wrap: anywhere; }}
+    .kanban-empty {{ margin: 0; color: var(--muted); font-size: 13px; }}
     @media (max-width: 900px) {{
       .hero__content {{ grid-template-columns: 1fr; }}
       .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -339,6 +505,23 @@ def render_dashboard(nodes: list[dict[str, Any]]) -> str:
       <span>●</span>
       <div><strong>Public view is deliberately narrow.</strong> This page summarizes routing metadata only; private memories, local skills, session traces, raw logs, environment variables, secrets, and transport commands are never rendered here.</div>
     </section>
+    <section class="mesh-kanban" aria-label="HermesMesh task board">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Hermes-style Kanban</p>
+          <h2>Mesh work board</h2>
+          <p>Track parent tasks, node assignments, claimed work, completions, failures, and privacy-filtered results without exposing private node transport or local state.</p>
+        </div>
+        <a class="button" href="/api/board">View board JSON</a>
+      </div>
+      <div class="kanban-board">{_render_kanban_board(board)}</div>
+    </section>
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Capability nodes</p>
+        <h2>Registered nodes</h2>
+      </div>
+    </div>
     <section class="cards" aria-label="Registered Hermes nodes">{content}</section>
   </main>
 </body>
@@ -356,6 +539,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             elif path == "/api/nodes":
                 self._send_json(public_nodes(self.mesh_home))
+            elif path == "/api/board":
+                self._send_json(public_board(self.mesh_home))
             elif path.startswith("/api/nodes/"):
                 suffix = path.removeprefix("/api/nodes/")
                 if suffix.endswith("/assignments"):
@@ -373,7 +558,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/results":
                 self._send_json(list_task_results(self.mesh_home))
             elif path == "/":
-                self._send_html(render_dashboard(public_nodes(self.mesh_home)))
+                self._send_html(render_dashboard(public_nodes(self.mesh_home), public_board(self.mesh_home)))
             else:
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         except CapabilityMeshValidationError as exc:
