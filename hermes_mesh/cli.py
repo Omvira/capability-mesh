@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
     client_sub = client.add_subparsers(dest="client_command")
     client_health = client_sub.add_parser("health", help="Check service health")
     client_health.set_defaults(func=cmd_client_health)
+    client_card = client_sub.add_parser("agent-card", help="Fetch the service Agent Card")
+    client_card.set_defaults(func=cmd_client_agent_card)
     client_nodes = client_sub.add_parser("nodes", help="List service nodes")
     client_nodes.set_defaults(func=cmd_client_nodes)
     client_register = client_sub.add_parser("register", help="Register a node manifest with the service")
@@ -165,9 +168,55 @@ def build_parser() -> argparse.ArgumentParser:
     client_complete.add_argument("result_path")
     client_complete.add_argument("--node-id", required=True)
     client_complete.set_defaults(func=cmd_client_complete)
+    client_wake = client_sub.add_parser("wake", help="Wake a node to poll an available assignment")
+    client_wake.add_argument("assignment_id")
+    client_wake.set_defaults(func=cmd_client_wake)
     client_run = client_sub.add_parser("run-next", help="Claim, execute, and complete the next local assignment")
     client_run.add_argument("manifest_path")
     client_run.set_defaults(func=cmd_client_run_next)
+    client_heartbeat = client_sub.add_parser("heartbeat", help="Send one node heartbeat")
+    client_heartbeat.add_argument("node_id")
+    client_heartbeat.add_argument("--status", choices=["online", "idle", "busy", "offline"], default="online")
+    client_heartbeat.set_defaults(func=cmd_client_heartbeat)
+    client_loop = client_sub.add_parser("heartbeat-loop", help="Send node heartbeats until interrupted")
+    client_loop.add_argument("node_id")
+    client_loop.add_argument("--status", choices=["online", "idle", "busy", "offline"], default="online")
+    client_loop.add_argument("--interval", type=float, default=30.0)
+    client_loop.set_defaults(func=cmd_client_heartbeat_loop)
+    client_service_loop = client_sub.add_parser("loop", help="Run an independent client loop: health, heartbeat, and optional work polling")
+    client_service_loop.add_argument("manifest_path")
+    client_service_loop.add_argument("--interval", type=float, default=30.0)
+    client_service_loop.add_argument("--run-next", action="store_true", help="Claim and complete one assignment per loop using the manifest dispatch command")
+    client_service_loop.set_defaults(func=cmd_client_loop)
+    client_install = client_sub.add_parser("install", help="Interactive trial Client registration and keep-online installer")
+    client_install.add_argument("--node-id", help="Unique client node id; defaults to user-host")
+    client_install.add_argument("--display-name", help="Human-readable client name")
+    client_install.add_argument("--task-type", action="append", help="Task type this Client can handle; repeatable")
+    client_install.add_argument("--tool", action="append", help="Public capability/tool label; repeatable")
+    client_install.add_argument("--transport-command", action="append", help="Transport command argv part; repeatable; default: hermes chat -q")
+    client_install.add_argument("--dispatch-command", action="append", help="Dispatch command argv part for assigned work; repeatable")
+    client_install.add_argument("--timeout-seconds", type=int, default=120)
+    client_install.add_argument("--allow-auto-accept", action="store_true")
+    client_install.add_argument("--auto-accept-task-type", action="append")
+    client_install.add_argument("--no-accept-tasks", action="store_true")
+    client_install.add_argument("--include-basic-resources", action="store_true")
+    client_install.add_argument("--config-dir", help="Directory for generated manifest")
+    client_install.add_argument("--manifest-path", help="Use an existing manifest JSON file instead of generating one")
+    client_install.add_argument("--print-manifest", action="store_true")
+    client_install.add_argument("--dry-run", action="store_true")
+    client_install.add_argument("--keep-online", action="store_true", help="Start foreground heartbeat loop after registration")
+    client_install.add_argument("--once", action="store_true", help="Send one heartbeat after registration and exit")
+    client_install.add_argument("--interval", type=float, default=30.0)
+    client_install.add_argument("--install-systemd", action="store_true", help="Write a user systemd service for durable keep-online loop")
+    client_install.add_argument("--yes", action="store_true", help="Non-interactive mode; use flags/defaults")
+    client_install.add_argument("--http-timeout", type=float, default=15.0)
+    client_install.set_defaults(func=cmd_client_install)
+    client_a2a = client_sub.add_parser("send-a2a", help="Send an A2A-like message envelope")
+    client_a2a.add_argument("--message", help="Path to JSON/YAML message envelope; defaults to a TextPart from --text")
+    client_a2a.add_argument("--text", help="TextPart content to send")
+    client_a2a.add_argument("--image", help="Image file path to send as FilePart bytes/base64")
+    client_a2a.add_argument("--mime-type", default="image/png", help="MIME type for --image")
+    client_a2a.set_defaults(func=cmd_client_send_a2a)
 
     return parser
 
@@ -311,6 +360,11 @@ def cmd_client_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_client_agent_card(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).agent_card())
+    return 0
+
+
 def cmd_client_nodes(args: argparse.Namespace) -> int:
     _write_json_or_stdout(_client(args).list_nodes())
     return 0
@@ -347,6 +401,114 @@ def cmd_client_claim(args: argparse.Namespace) -> int:
 def cmd_client_complete(args: argparse.Namespace) -> int:
     result = _load_yaml_or_json(args.result_path)
     _write_json_or_stdout(_client(args).complete_assignment(args.assignment_id, args.node_id, result))
+    return 0
+
+
+def cmd_client_wake(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).wake_assignment(args.assignment_id))
+    return 0
+
+
+def cmd_client_heartbeat(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).heartbeat(args.node_id, status=args.status))
+    return 0
+
+
+def cmd_client_heartbeat_loop(args: argparse.Namespace) -> int:
+    if args.interval <= 0:
+        raise CapabilityMeshValidationError("interval must be greater than zero")
+    client = _client(args)
+    try:
+        while True:
+            _write_json_or_stdout(client.heartbeat(args.node_id, status=args.status))
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_client_loop(args: argparse.Namespace) -> int:
+    if args.interval <= 0:
+        raise CapabilityMeshValidationError("interval must be greater than zero")
+    manifest = _load_yaml_or_json(args.manifest_path)
+    node_id = str(manifest.get("node_id") or "")
+    if not node_id:
+        raise CapabilityMeshValidationError("manifest node_id is required")
+    client = _client(args)
+    try:
+        while True:
+            health = client.health()
+            if health.get("ok") is True:
+                client.heartbeat(node_id)
+                if args.run_next:
+                    _write_json_or_stdout(client.run_next_assignment(manifest))
+                else:
+                    _write_json_or_stdout({"ok": True, "server": "online", "node_id": node_id})
+            else:
+                _write_json_or_stdout({"ok": False, "server": "unhealthy", "health": health})
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_client_install(args: argparse.Namespace) -> int:
+    from scripts.install_client import main as install_client_main
+
+    argv = ["--mesh-url", args.url]
+    for name in [
+        "node_id",
+        "display_name",
+        "timeout_seconds",
+        "config_dir",
+        "manifest_path",
+        "interval",
+        "http_timeout",
+    ]:
+        value = getattr(args, name, None)
+        if value is not None:
+            argv.extend(["--" + name.replace("_", "-"), str(value)])
+    for name in ["task_type", "tool", "transport_command", "dispatch_command", "auto_accept_task_type"]:
+        for value in getattr(args, name, None) or []:
+            argv.extend(["--" + name.replace("_", "-"), str(value)])
+    for flag in [
+        "allow_auto_accept",
+        "no_accept_tasks",
+        "include_basic_resources",
+        "print_manifest",
+        "dry_run",
+        "keep_online",
+        "once",
+        "install_systemd",
+        "yes",
+    ]:
+        if getattr(args, flag, False):
+            argv.append("--" + flag.replace("_", "-"))
+    return install_client_main(argv)
+
+
+def _a2a_message_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    if args.message:
+        return _load_yaml_or_json(args.message)
+    parts: list[dict[str, Any]] = []
+    if args.text:
+        parts.append({"text": args.text})
+    if args.image:
+        import base64
+
+        image_path = Path(args.image)
+        parts.append(
+            {
+                "filename": image_path.name,
+                "mediaType": args.mime_type,
+                "raw": base64.b64encode(image_path.read_bytes()).decode("ascii"),
+            }
+        )
+    if not parts:
+        raise CapabilityMeshValidationError("send-a2a requires --message, --text, or --image")
+    return {"role": "ROLE_USER", "parts": parts}
+
+
+def cmd_client_send_a2a(args: argparse.Namespace) -> int:
+    _write_json_or_stdout(_client(args).send_a2a_message(_a2a_message_from_args(args)))
     return 0
 
 

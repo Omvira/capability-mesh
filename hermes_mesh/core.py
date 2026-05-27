@@ -13,8 +13,11 @@ import json
 import re
 import subprocess
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from urllib import error, request
 
 import yaml
 
@@ -44,6 +47,11 @@ CONTRIBUTION_VISIBILITIES = {"none", "local_private", "team_registry", "public_c
 PLAN_STEP_KINDS = {"server_tool_call", "node_tool_call", "orchestration_tool_call"}
 PLAN_STEP_ACTIONS = {"invoke_server_tool", "invoke_node", "orchestration_action", "completed", "no_match"}
 SERVER_LOCAL_TOOLS = {"aggregate_results", "verify_result", "echo_sanitized"}
+NODE_REPORTED_STATUSES = {"online", "idle", "busy", "offline"}
+NODE_ONLINE_SECONDS = 90
+NODE_STALE_SECONDS = 300
+A2A_PART_KINDS = {"text", "file", "data"}
+A2A_ROLES = {"ROLE_USER", "ROLE_AGENT"}
 SERVER_TOOL_NODE_PRIVATE_FIELDS = {
     "transport",
     "transport_command",
@@ -227,18 +235,23 @@ def validate_capability_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_transport_metadata(transport: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate local/ssh transport metadata without accepting shell strings."""
+    """Validate transport metadata without accepting shell strings.
+
+    ``webhook`` is notification-only: the server may send a small wake-up event,
+    but the node still polls/claims/completes assignments itself.
+    """
 
     transport = _require_mapping(transport, "transport")
     transport_type = transport.get("type", "local")
-    if transport_type not in {"local", "ssh"}:
-        raise CapabilityMeshValidationError("transport.type must be 'local' or 'ssh'")
+    if transport_type not in {"local", "ssh", "webhook"}:
+        raise CapabilityMeshValidationError("transport.type must be 'local', 'ssh', or 'webhook'")
 
     command = transport.get("command", DEFAULT_TRANSPORT_COMMAND)
-    if not isinstance(command, list) or not command:
-        raise CapabilityMeshValidationError("transport.command must be a non-empty list")
-    if not all(isinstance(part, str) and part.strip() for part in command):
-        raise CapabilityMeshValidationError("transport.command must contain only non-empty strings")
+    if transport_type != "webhook" or "command" in transport:
+        if not isinstance(command, list) or not command:
+            raise CapabilityMeshValidationError("transport.command must be a non-empty list")
+        if not all(isinstance(part, str) and part.strip() for part in command):
+            raise CapabilityMeshValidationError("transport.command must contain only non-empty strings")
 
     timeout = transport.get("timeout_seconds", DEFAULT_TRANSPORT_TIMEOUT)
     if not isinstance(timeout, int) or timeout < 1 or timeout > 300:
@@ -246,9 +259,10 @@ def validate_transport_metadata(transport: Mapping[str, Any]) -> dict[str, Any]:
 
     validated: dict[str, Any] = {
         "type": transport_type,
-        "command": list(command),
         "timeout_seconds": timeout,
     }
+    if transport_type != "webhook" or "command" in transport:
+        validated["command"] = list(command)
     dispatch_command = transport.get("dispatch_command")
     if dispatch_command is not None:
         if not isinstance(dispatch_command, list) or not dispatch_command:
@@ -272,6 +286,21 @@ def validate_transport_metadata(transport: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(port, int) or port < 1 or port > 65535:
                 raise CapabilityMeshValidationError("transport.port must be an integer from 1 to 65535")
             validated["port"] = port
+    if transport_type == "webhook":
+        wake_url = transport.get("wake_url")
+        _require_non_empty_string(wake_url, "transport.wake_url")
+        wake_url = str(wake_url)
+        if not (wake_url.startswith("http://") or wake_url.startswith("https://")):
+            raise CapabilityMeshValidationError("transport.wake_url must be an http(s) URL")
+        validated["wake_url"] = wake_url
+        wake_token = transport.get("wake_token")
+        if wake_token is not None:
+            _require_non_empty_string(wake_token, "transport.wake_token")
+            validated["wake_token"] = str(wake_token)
+        wake_timeout = transport.get("wake_timeout_seconds", timeout)
+        if not isinstance(wake_timeout, int) or wake_timeout < 1 or wake_timeout > 60:
+            raise CapabilityMeshValidationError("transport.wake_timeout_seconds must be an integer from 1 to 60")
+        validated["wake_timeout_seconds"] = wake_timeout
     return validated
 
 
@@ -346,6 +375,29 @@ def _write_registry_record(
     return path
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _list_registry_records(
     dirname: str,
     validator: Any,
@@ -397,6 +449,247 @@ def get_registered_node(node_id: str, mesh_home: str | Path | None = None) -> di
         if node.get("node_id") == node_id:
             return node
     raise CapabilityMeshValidationError(f"unknown node_id: {node_id}")
+
+
+def validate_node_status_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate privacy-safe persisted node heartbeat/status metadata."""
+
+    record = _require_mapping(record, "node_status")
+    _require_schema_version(record)
+    node_id = _safe_record_id(record.get("node_id"), "node_id")
+    last_seen_at = record.get("last_seen_at")
+    if last_seen_at is not None:
+        parsed = _parse_utc_iso(last_seen_at)
+        if parsed is None:
+            raise CapabilityMeshValidationError("last_seen_at must be an ISO timestamp")
+        last_seen_at = parsed.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    status = record.get("status", "online")
+    if status not in NODE_REPORTED_STATUSES:
+        raise CapabilityMeshValidationError("status must be one of: " + ", ".join(sorted(NODE_REPORTED_STATUSES)))
+    return {"schema_version": SCHEMA_VERSION, "node_id": node_id, "last_seen_at": last_seen_at, "status": status}
+
+
+def record_node_heartbeat(
+    node_id: str,
+    status: str = "online",
+    *,
+    mesh_home: str | Path | None = None,
+    seen_at: str | None = None,
+) -> dict[str, Any]:
+    """Persist a node heartbeat without accepting private runtime state."""
+
+    get_registered_node(node_id, mesh_home=mesh_home)
+    record = validate_node_status_record(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "node_id": node_id,
+            "last_seen_at": seen_at or _utc_now_iso(),
+            "status": status,
+        }
+    )
+    _write_registry_record("node-status", node_id, record, mesh_home)
+    return record
+
+
+def get_node_status_record(node_id: str, mesh_home: str | Path | None = None) -> dict[str, Any] | None:
+    _safe_record_id(node_id, "node_id")
+    path = _mesh_registry_dir("node-status", mesh_home) / f"{node_id}.yaml"
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        return validate_node_status_record(yaml.safe_load(f) or {})
+
+
+def public_node_presence(
+    node_id: str,
+    *,
+    mesh_home: str | Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return public presence derived only from last_seen_at."""
+
+    record = get_node_status_record(node_id, mesh_home=mesh_home)
+    if record is None or record.get("last_seen_at") is None:
+        return {"status": "never_seen", "label": "never seen", "last_seen_at": None}
+    last_seen = _parse_utc_iso(record.get("last_seen_at"))
+    if last_seen is None:
+        return {"status": "never_seen", "label": "never seen", "last_seen_at": None}
+    current = now or _utc_now()
+    age_seconds = max(0, int((current - last_seen).total_seconds()))
+    if age_seconds <= NODE_ONLINE_SECONDS:
+        status = "online"
+    elif age_seconds <= NODE_STALE_SECONDS:
+        status = "stale"
+    else:
+        status = "offline"
+    return {"status": status, "label": status.replace("_", " "), "last_seen_at": record["last_seen_at"], "age_seconds": age_seconds}
+
+
+def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
+    """Return a privacy-safe Agent Card with A2A-compatible public metadata."""
+
+    url = str(server_url or "").rstrip("/")
+    return {
+        "name": "HermesMesh Server",
+        "description": "Privacy-first HermesMesh HTTP service for task-capable clients.",
+        "url": url,
+        "version": "0.1.0",
+        "protocolVersion": "1.0",
+        "protocolVersions": ["1.0"],
+        "preferredTransport": "HTTP+JSON",
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": True,
+        },
+        "defaultInputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "additionalInterfaces": [
+            {"transport": "HTTP+JSON", "url": f"{url}/message:send" if url else "/message:send"},
+        ],
+        "skills": [
+            {
+                "id": "hermesmesh-message-transfer",
+                "name": "HermesMesh A2A Message Transfer",
+                "description": "Accepts A2A-like message envelopes with TextPart, FilePart, and DataPart content.",
+                "tags": ["a2a", "message", "task", "privacy-first"],
+                "inputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
+                "outputModes": ["text/plain", "application/json"],
+            }
+        ],
+    }
+
+
+def validate_a2a_part(part: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an A2A-like TextPart, FilePart, or DataPart."""
+
+    data = dict(_require_mapping(part, "part"))
+    raw_kind = data.get("kind") or data.get("type")
+    has_text = "text" in data
+    has_file = "file" in data or "raw" in data or "url" in data or "uri" in data
+    has_data = "data" in data
+    detected = [name for name, present in [("text", has_text), ("file", has_file), ("data", has_data)] if present]
+    if raw_kind is None:
+        if len(detected) != 1:
+            raise CapabilityMeshValidationError("part must contain exactly one of text, file/raw/url, or data")
+        kind = detected[0]
+    else:
+        kind = str(raw_kind).lower()
+    if kind not in A2A_PART_KINDS:
+        raise CapabilityMeshValidationError("part.kind must be text, file, or data")
+    if kind == "text":
+        _require_non_empty_string(data.get("text"), "part.text")
+        return {"text": str(data["text"])}
+    if kind == "file":
+        file_data = dict(_require_mapping(data.get("file", data), "part.file"))
+        mime_type = file_data.get("mediaType") or file_data.get("mimeType") or file_data.get("mime_type")
+        _require_non_empty_string(mime_type, "part.file.mediaType")
+        raw = file_data.get("raw", file_data.get("bytes", file_data.get("fileWithBytes")))
+        uri = file_data.get("url", file_data.get("uri"))
+        has_raw = isinstance(raw, str) and bool(raw.strip())
+        has_uri = isinstance(uri, str) and bool(uri.strip())
+        if not has_raw and not has_uri:
+            raise CapabilityMeshValidationError("part.file requires raw bytes/base64 or url")
+        validated_file: dict[str, Any] = {"mediaType": str(mime_type)}
+        name = file_data.get("filename", file_data.get("name"))
+        if name is not None:
+            validated_file["filename"] = str(name)
+        if has_raw:
+            validated_file["raw"] = str(raw)
+        if has_uri:
+            validated_file["url"] = str(uri)
+        return validated_file
+    payload = data.get("data")
+    if not isinstance(payload, (dict, list)):
+        raise CapabilityMeshValidationError("part.data must be an object or list")
+    result: dict[str, Any] = {"data": copy.deepcopy(payload)}
+    if data.get("mediaType") is not None:
+        result["mediaType"] = str(data["mediaType"])
+    return result
+
+
+def validate_a2a_message(message: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a privacy-safe A2A-like message envelope."""
+
+    data = dict(_require_mapping(message, "message"))
+    role = str(data.get("role", "ROLE_USER"))
+    role_aliases = {"user": "ROLE_USER", "agent": "ROLE_AGENT"}
+    role = role_aliases.get(role.lower(), role)
+    if role not in A2A_ROLES:
+        raise CapabilityMeshValidationError("message.role must be ROLE_USER or ROLE_AGENT")
+    parts = data.get("parts")
+    if not isinstance(parts, list) or not parts:
+        raise CapabilityMeshValidationError("message.parts must be a non-empty list")
+    message_id = data.get("messageId") or data.get("message_id") or f"msg-{uuid.uuid4().hex}"
+    _require_non_empty_string(message_id, "message.messageId")
+    return {
+        "kind": "message",
+        "messageId": str(message_id),
+        "role": str(role),
+        "parts": [validate_a2a_part(_require_mapping(part, "part")) for part in parts],
+    }
+
+
+def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a completed A2A-like task with response artifacts."""
+
+    validated = validate_a2a_message(message)
+    text_count = sum(1 for part in validated["parts"] if "text" in part)
+    file_parts = [part for part in validated["parts"] if "mediaType" in part and ("raw" in part or "url" in part)]
+    data_count = sum(1 for part in validated["parts"] if "data" in part)
+    image_count = sum(
+        1
+        for part in file_parts
+        if str(part.get("mediaType", "")).startswith("image/")
+    )
+    task_id = f"a2a-{uuid.uuid4().hex}"
+    artifact_parts: list[dict[str, Any]] = [
+        {
+            "text": f"received {text_count} text part(s), {len(file_parts)} file part(s), {data_count} data part(s)",
+        },
+        {
+            "data": {"textParts": text_count, "fileParts": len(file_parts), "imageParts": image_count, "dataParts": data_count},
+            "mediaType": "application/json",
+        },
+    ]
+    if image_count:
+        artifact_parts.append({"text": f"received {image_count} image file part(s)"})
+    return {
+        "task": {
+            "id": task_id,
+            "contextId": task_id,
+            "status": {
+                "state": "TASK_STATE_COMPLETED",
+                "timestamp": _utc_now_iso(),
+                "message": {"messageId": f"{task_id}-status", "role": "ROLE_AGENT", "parts": artifact_parts[:1]},
+            },
+            "history": [validated],
+            "artifacts": [
+                {
+                    "artifactId": f"{task_id}-artifact-1",
+                    "name": "HermesMesh response",
+                    "parts": artifact_parts,
+                }
+            ],
+        }
+    }
+
+
+def record_a2a_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
+    task_data = dict(_require_mapping(task, "a2a_task"))
+    if "task" in task_data:
+        task_data = dict(_require_mapping(task_data["task"], "a2a_task.task"))
+    _require_non_empty_string(task_data.get("id"), "a2a_task.id")
+    return _write_registry_record("a2a-tasks", str(task_data["id"]), task_data, mesh_home)
+
+
+def list_a2a_tasks(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    def _validator(record: Mapping[str, Any]) -> dict[str, Any]:
+        data = dict(_require_mapping(record, "a2a_task"))
+        _require_non_empty_string(data.get("id"), "a2a_task.id")
+        return data
+
+    return _list_registry_records("a2a-tasks", _validator, mesh_home)
 
 
 def post_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
@@ -464,6 +757,8 @@ def list_node_assignments(node_id: str, mesh_home: str | Path | None = None) -> 
                 "task": assigned_task,
             }
         )
+    heartbeat_status = "busy" if any(item["assignment"].get("status") == "claimed" for item in work) else "online"
+    record_node_heartbeat(node_id, heartbeat_status, mesh_home=mesh_home)
     return work
 
 
@@ -479,10 +774,91 @@ def claim_task_assignment(
         raise CapabilityMeshValidationError("assignment is not assigned to node_id")
     if assignment.get("status") not in {"auto_assigned", "awaiting_node_approval", "claimed"}:
         raise CapabilityMeshValidationError("assignment is not claimable")
+    record_node_heartbeat(node_id, "busy", mesh_home=mesh_home)
     claimed = dict(assignment)
     claimed["status"] = "claimed"
     record_task_assignment(claimed, mesh_home=mesh_home)
     return validate_task_assignment(claimed)
+
+
+
+def build_assignment_wake_event(
+    assignment: Mapping[str, Any],
+    *,
+    server_url: str,
+) -> dict[str, Any]:
+    """Build the minimal wake-up event sent to a node transport."""
+
+    validated = validate_task_assignment(assignment)
+    _require_non_empty_string(server_url, "server_url")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "event": "assignment_available",
+        "assignment_id": validated["assignment_id"],
+        "node_id": validated["node_id"],
+        "server_url": str(server_url).rstrip("/"),
+    }
+
+
+def wake_assignment(
+    assignment_id: str,
+    *,
+    server_url: str,
+    mesh_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Notify a node that an assignment is available without executing it.
+
+    Wake-up is intentionally notification-only.  The payload tells the node to
+    poll; it does not include the task contract, private transport command, or
+    any parent task context.
+    """
+
+    assignment = get_task_assignment(assignment_id, mesh_home=mesh_home)
+    node = get_registered_node(str(assignment["node_id"]), mesh_home=mesh_home)
+    transport = node.get("transport", {})
+    event = build_assignment_wake_event(assignment, server_url=server_url)
+    if transport.get("type") != "webhook":
+        return {
+            "status": "unsupported",
+            "assignment_id": assignment["assignment_id"],
+            "node_id": assignment["node_id"],
+            "reason": "node transport does not declare webhook wake-up",
+        }
+
+    wake_url = str(transport.get("wake_url"))
+    body = json.dumps(event, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    wake_token = transport.get("wake_token")
+    if wake_token:
+        headers["X-HermesMesh-Wake-Token"] = str(wake_token)
+    req = request.Request(wake_url, data=body, headers=headers, method="POST")
+    timeout = float(transport.get("wake_timeout_seconds", DEFAULT_TRANSPORT_TIMEOUT))
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - node opt-in endpoint
+            status_code = int(resp.status)
+    except error.HTTPError as exc:
+        return {
+            "status": "failed",
+            "assignment_id": assignment["assignment_id"],
+            "node_id": assignment["node_id"],
+            "reason": f"wake endpoint returned HTTP {exc.code}",
+        }
+    except error.URLError as exc:
+        return {
+            "status": "failed",
+            "assignment_id": assignment["assignment_id"],
+            "node_id": assignment["node_id"],
+            "reason": f"wake endpoint failed: {exc.reason}",
+        }
+    return {
+        "status": "sent",
+        "assignment_id": assignment["assignment_id"],
+        "node_id": assignment["node_id"],
+        "http_status": status_code,
+    }
 
 
 def record_task_result(
@@ -513,6 +889,7 @@ def complete_task_assignment(
     assignment = get_task_assignment(assignment_id, mesh_home=mesh_home)
     if assignment.get("node_id") != node_id:
         raise CapabilityMeshValidationError("assignment is not assigned to node_id")
+    record_node_heartbeat(node_id, "online", mesh_home=mesh_home)
     assigned_task = assignment.get("tool_call")
     if assigned_task is not None:
         task = validate_task_contract(_require_mapping(assigned_task, "tool_call"))
@@ -1191,6 +1568,10 @@ def execute_plan_step(
         _write_registry_record("results", result_record["result_id"], result_record, mesh_home)
         return {**plan, "result_record": result_record}
     if plan.get("action") == "invoke_node":
+        for manifest in manifests:
+            if manifest.get("node_id") == plan["assignment"].get("node_id"):
+                register_node_manifest(manifest, mesh_home=mesh_home)
+                break
         record_task_assignment(plan["assignment"], mesh_home=mesh_home)
     return plan
 

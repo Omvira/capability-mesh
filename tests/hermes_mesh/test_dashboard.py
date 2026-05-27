@@ -7,6 +7,10 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import base64
+from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -46,7 +50,7 @@ def dashboard_url(tmp_path):
 
 def _get_json(url: str):
     with urllib.request.urlopen(url, timeout=10) as response:
-        assert response.headers["Content-Type"].startswith("application/json")
+        assert response.headers["Content-Type"].startswith(("application/json", "application/a2a+json"))
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -59,7 +63,7 @@ def _post_json(url: str, payload: dict):
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
-        assert response.headers["Content-Type"].startswith("application/json")
+        assert response.headers["Content-Type"].startswith(("application/json", "application/a2a+json"))
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -89,6 +93,33 @@ def _task(task_id="task-1", task_type="test_running"):
     }
 
 
+
+def _wake_receiver():
+    received: list[dict] = []
+    headers_seen: list[dict] = []
+
+    class WakeHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            received.append(payload)
+            headers_seen.append(dict(self.headers))
+            body = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), WakeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{server.server_port}/wake", received, headers_seen
+
+
 def test_dashboard_api_json_lists_registered_nodes_and_capabilities(dashboard_url):
     nodes = _get_json(f"{dashboard_url}/api/nodes")
 
@@ -105,6 +136,11 @@ def test_dashboard_api_json_lists_registered_nodes_and_capabilities(dashboard_ur
                 "auto_accept_task_types": ["test_running"],
             },
             "transport": {"type": "local"},
+            "online_status": {
+                "status": "never_seen",
+                "label": "never seen",
+                "last_seen_at": None,
+            },
             "privacy": {
                 "expose_environment": "safe",
                 "expose_local_skills": "safe",
@@ -125,15 +161,98 @@ def test_dashboard_api_gets_single_node(dashboard_url):
     assert node["task_types"] == ["code_review", "test_running"]
 
 
-def test_dashboard_html_includes_registered_nodes_and_capabilities(dashboard_url):
+def test_dashboard_html_hides_registered_nodes_until_nodes_stat_clicked(dashboard_url):
     html = _get_text(f"{dashboard_url}/")
 
-    assert "HermesMesh Dashboard" in html
-    assert "Dashboard Node" in html
-    assert "dash-node" in html
-    assert "code_review" in html
-    assert "pytest" in html
-    assert "requires_human_approval: false" in html
+    assert "Hermes Mesh" in html
+    assert 'id="nodesStat"' in html
+    assert 'id="nodesDrawer"' in html
+    assert 'aria-label="Registered Hermes nodes"' not in html
+    assert "<h2>Registered nodes</h2>" not in html
+    assert "Dashboard Node" not in html
+    assert "dash-node" not in html
+    assert "requires_human_approval: false" not in html
+
+
+def test_dashboard_node_statuses_api_lists_names_capabilities_and_online_status(dashboard_url):
+    rows = _get_json(f"{dashboard_url}/api/nodes/statuses")
+
+    assert rows == [
+        {
+            "node_id": "dash-node",
+            "display_name": "Dashboard Node",
+            "task_types": ["code_review", "test_running"],
+            "tools_available": ["python", "pytest"],
+            "online_status": {
+                "status": "never_seen",
+                "label": "never seen",
+                "last_seen_at": None,
+            },
+        }
+    ]
+
+
+def test_node_heartbeat_updates_public_status_without_private_state(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    client = HermesMeshClient(dashboard_url)
+
+    response = client.heartbeat("dash-node", status="busy")
+
+    assert response["ok"] is True
+    assert response["node"]["online_status"]["status"] == "online"
+    html = _get_text(f"{dashboard_url}/")
+    assert "online" in html
+    assert "/api/nodes/statuses" in html
+    node = _get_json(f"{dashboard_url}/api/nodes/dash-node")
+    assert node["online_status"]["status"] == "online"
+    assert node["online_status"]["last_seen_at"]
+    statuses = _get_json(f"{dashboard_url}/api/nodes/statuses")
+    assert statuses[0]["online_status"]["status"] == "online"
+    body = json.dumps(response) + json.dumps(node) + json.dumps(statuses)
+    assert "busy" not in body
+    assert "SECRET_TRANSPORT_COMMAND" not in body
+    assert "dispatch_command" not in body
+    assert "wake_url" not in body
+    assert "token" not in body.lower()
+
+
+def test_public_presence_derives_online_stale_offline_and_never_seen(tmp_path):
+    from hermes_mesh import build_default_capability_manifest, record_node_heartbeat, register_node_manifest
+    from hermes_mesh.dashboard import make_server
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for node_id in ["online-node", "stale-node", "offline-node", "never-node"]:
+        register_node_manifest(
+            build_default_capability_manifest(
+                node_id=node_id,
+                display_name=node_id,
+                task_types=["test_running"],
+                tools_available=["pytest"],
+            ),
+            mesh_home=tmp_path,
+        )
+    record_node_heartbeat("online-node", mesh_home=tmp_path, seen_at=(now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"))
+    record_node_heartbeat("stale-node", mesh_home=tmp_path, seen_at=(now - timedelta(seconds=120)).isoformat().replace("+00:00", "Z"))
+    record_node_heartbeat("offline-node", mesh_home=tmp_path, seen_at=(now - timedelta(seconds=600)).isoformat().replace("+00:00", "Z"))
+
+    server = make_server(port=0, mesh_home=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        rows = _get_json(f"http://127.0.0.1:{server.server_port}/api/nodes/statuses")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    by_id = {row["node_id"]: row["online_status"]["status"] for row in rows}
+    assert by_id == {
+        "never-node": "never_seen",
+        "offline-node": "offline",
+        "online-node": "online",
+        "stale-node": "stale",
+    }
 
 
 def test_dashboard_html_renders_kanban_columns_and_public_cards(dashboard_url):
@@ -256,6 +375,60 @@ def test_client_can_call_standalone_server(dashboard_url):
     assert client.post_task(_task("task-2"))["ok"] is True
     routed = client.route_task(_task("task-2"), required_tools=["pytest"])
     assert routed["route"]["selected_node"] == "dash-node"
+
+
+def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    card = HermesMeshClient(dashboard_url).agent_card()
+
+    assert card["name"] == "HermesMesh Server"
+    assert card["url"] == dashboard_url
+    assert card["protocolVersion"] == "1.0"
+    assert card["protocolVersions"] == ["1.0"]
+    assert card["preferredTransport"] == "HTTP+JSON"
+    assert card["capabilities"]["streaming"] is False
+    assert card["additionalInterfaces"][0]["url"] == f"{dashboard_url}/message:send"
+    assert card["skills"][0]["id"] == "hermesmesh-message-transfer"
+    body = json.dumps(card)
+    assert "SECRET_TRANSPORT_COMMAND" not in body
+    assert "dispatch_command" not in body
+    assert "memory" not in body.lower()
+
+
+def test_a2a_text_and_image_message_exchange_returns_artifacts(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    image_bytes = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii")
+    response = HermesMeshClient(dashboard_url).send_a2a_message(
+        {
+            "role": "ROLE_USER",
+            "parts": [
+                {"text": "hello mesh"},
+                {"raw": image_bytes, "filename": "pixel.png", "mediaType": "image/png"},
+                {"data": {"request": "inspect"}, "mediaType": "application/json"},
+            ],
+        }
+    )
+
+    assert "task" in response
+    task = response["task"]
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert task["history"][0]["parts"][1]["mediaType"] == "image/png"
+    artifact_parts = task["artifacts"][0]["parts"]
+    assert artifact_parts[1]["data"] == {"dataParts": 1, "fileParts": 1, "imageParts": 1, "textParts": 1}
+    assert any(part.get("text") == "received 1 image file part(s)" for part in artifact_parts)
+
+
+def test_server_sees_client_heartbeat_online_and_client_checks_health(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+
+    client = HermesMeshClient(dashboard_url)
+
+    assert client.server_is_healthy() is True
+    client.heartbeat("dash-node")
+
+    assert _get_json(f"{dashboard_url}/api/nodes/dash-node")["online_status"]["status"] == "online"
 
 
 def test_server_exposes_planning_step_for_node_tool_calls(dashboard_url):
@@ -396,6 +569,7 @@ def test_node_can_poll_claim_and_complete_assignment(dashboard_url):
         {"node_id": "dash-node"},
     )
     assert claimed["assignment"]["status"] == "claimed"
+    assert _get_json(f"{dashboard_url}/api/nodes/dash-node")["online_status"]["status"] == "online"
 
     completed = _post_json(
         f"{dashboard_url}/api/assignments/task-orch-dash-node/complete",
@@ -507,3 +681,173 @@ def test_client_run_next_assignment_dispatches_local_agent_and_completes(tmp_pat
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+
+def test_server_can_wake_webhook_node_without_exposing_private_transport(tmp_path):
+    from hermes_mesh import build_default_capability_manifest, register_node_manifest
+    from hermes_mesh.dashboard import make_server, public_node_view
+
+    wake_server, wake_thread, wake_url, received, headers_seen = _wake_receiver()
+    try:
+        manifest = build_default_capability_manifest(
+            node_id="wake-node",
+            display_name="Wake Node",
+            task_types=["test_running"],
+            tools_available=["pytest"],
+        )
+        manifest["policies"]["auto_accept_task_types"] = ["test_running"]
+        manifest["policies"]["requires_human_approval"] = False
+        manifest["transport"] = {
+            "type": "webhook",
+            "wake_url": wake_url,
+            "wake_token": "SECRET_WAKE_TOKEN",
+            "wake_timeout_seconds": 5,
+            "dispatch_command": ["private-dispatch", "SECRET_TRANSPORT_COMMAND"],
+        }
+        register_node_manifest(manifest, mesh_home=tmp_path)
+
+        server = make_server(port=0, mesh_home=tmp_path)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            _post_json(f"{url}/api/tasks", _task("task-wake"))
+            routed = _post_json(f"{url}/api/tasks/route", {"task": _task("task-wake"), "required_tools": ["pytest"]})
+
+            woken = _post_json(f"{url}/api/assignments/{routed['assignment']['assignment_id']}/wake", {})
+
+            assert woken["ok"] is True
+            assert woken["wake"]["status"] == "sent"
+            assert woken["wake"]["assignment_id"] == "task-wake-wake-node"
+            assert woken["wake"]["node_id"] == "wake-node"
+            assert received == [
+                {
+                    "schema_version": "capability-mesh-alpha-1",
+                    "event": "assignment_available",
+                    "assignment_id": "task-wake-wake-node",
+                    "node_id": "wake-node",
+                    "server_url": url,
+                }
+            ]
+            lower_headers = {key.lower(): value for key, value in headers_seen[0].items()}
+            assert lower_headers["x-hermesmesh-wake-token"] == "SECRET_WAKE_TOKEN"
+            body = json.dumps(woken) + json.dumps(_get_json(f"{url}/api/nodes")) + json.dumps(public_node_view(manifest))
+            assert "SECRET_WAKE_TOKEN" not in body
+            assert wake_url not in body
+            assert "SECRET_TRANSPORT_COMMAND" not in body
+            assert "dispatch_command" not in body
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+    finally:
+        wake_server.shutdown()
+        wake_thread.join(timeout=5)
+        wake_server.server_close()
+
+
+def test_client_and_cli_can_request_assignment_wake(dashboard_url):
+    from hermes_mesh.client import HermesMeshClient
+    from hermes_mesh.cli import build_parser
+
+    client = HermesMeshClient(dashboard_url)
+    client.post_task(_task("task-client-wake"))
+    routed = client.route_task(_task("task-client-wake"), required_tools=["pytest"])
+
+    response = client.wake_assignment(routed["assignment"]["assignment_id"])
+
+    assert response["ok"] is True
+    assert response["wake"]["status"] == "unsupported"
+    args = build_parser().parse_args(["client", "--url", dashboard_url, "wake", routed["assignment"]["assignment_id"]])
+    assert args.client_command == "wake"
+
+
+def test_client_cli_parses_heartbeat_commands(dashboard_url):
+    from hermes_mesh.cli import build_parser
+
+    heartbeat = build_parser().parse_args(["client", "--url", dashboard_url, "heartbeat", "dash-node", "--status", "idle"])
+    loop = build_parser().parse_args(
+        ["client", "--url", dashboard_url, "heartbeat-loop", "dash-node", "--interval", "5", "--status", "online"]
+    )
+
+    assert heartbeat.client_command == "heartbeat"
+    assert heartbeat.node_id == "dash-node"
+    assert heartbeat.status == "idle"
+    assert loop.client_command == "heartbeat-loop"
+    assert loop.interval == 5
+
+
+def test_client_install_cli_registers_manifest_and_sends_initial_heartbeat(dashboard_url, tmp_path):
+    from hermes_mesh.cli import build_parser, cmd_client_install
+    from hermes_mesh.client import HermesMeshClient
+
+    config_dir = tmp_path / "client-home"
+    args = build_parser().parse_args(
+        [
+            "client",
+            "--url",
+            dashboard_url,
+            "install",
+            "--yes",
+            "--node-id",
+            "trial-client",
+            "--display-name",
+            "Trial Client",
+            "--task-type",
+            "smoke",
+            "--tool",
+            "hermes",
+            "--allow-auto-accept",
+            "--once",
+            "--config-dir",
+            str(config_dir),
+        ]
+    )
+
+    assert cmd_client_install(args) == 0
+
+    manifest_path = config_dir / "trial-client.manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["node_id"] == "trial-client"
+    assert manifest["privacy"]["expose_local_skills"] is False
+    assert manifest["privacy"]["expose_memory"] is False
+    assert manifest["policies"]["auto_accept_task_types"] == ["smoke"]
+    node = HermesMeshClient(dashboard_url).get_node("trial-client")
+    assert node["online_status"]["status"] == "online"
+
+
+def test_install_client_script_dry_run_manifest_is_privacy_safe(capsys):
+    from scripts import install_client
+
+    rc = install_client.main(
+        [
+            "--yes",
+            "--mesh-url",
+            "http://127.0.0.1:8765",
+            "--node-id",
+            "dry-client",
+            "--task-type",
+            "smoke",
+            "--tool",
+            "hermes",
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["node_id"] == "dry-client"
+    assert manifest["privacy"] == {
+        "expose_local_skills": False,
+        "expose_memory": False,
+        "expose_session_history": False,
+        "expose_reasoning_trace": False,
+        "expose_raw_logs": False,
+        "expose_environment": False,
+    }
+    rendered = json.dumps(manifest)
+    assert "environment_variables" in rendered
+    assert "private_memory" in rendered
+    assert "SECRET" not in rendered

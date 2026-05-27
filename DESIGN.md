@@ -15,10 +15,11 @@ The first principle is:
 
 ## Architecture
 
-- `hermes_mesh.core`: schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, result filtering, verification primitives, and contribution records.
-- `hermes_mesh.dashboard`: standalone stdlib HTTP service. It serves the dashboard and JSON APIs from this repository; it is not a Hermes Agent plugin.
-- `hermes_mesh.client`: stdlib HTTP client for registering nodes, posting tasks, routing tasks, and recording filtered results against a running service.
-- `hermes_mesh.cli`: standalone CLI for local registry operations, the service, and client calls.
+- `hermes_mesh.core`: schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, privacy-safe node heartbeat/status records, result filtering, verification primitives, and contribution records.
+- `hermes_mesh.dashboard`: standalone stdlib Server. It runs the HermesMesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry; it is not a Hermes Agent plugin.
+- `hermes_mesh.client`: independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A-like message sending against a running Server.
+- `hermes_mesh.cli`: standalone CLI for local registry operations, starting the Server, starting Client commands/loops, and launching the guided trial Client installer.
+- `scripts/install_client.py`: stdlib-only guided installer for a first Client. It prompts for safe public metadata, registers with a Server, writes a local manifest, and optionally keeps the Client online with heartbeat.
 
 Hermes Agent is only one possible node runtime/adapter. HermesMesh must not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
 
@@ -29,7 +30,10 @@ Hermes Agent is only one possible node runtime/adapter. HermesMesh must not impo
 - Local task posting and deterministic task routing by task type/tool match.
 - Server-planned mixed tool calls for subtasks/partial operations under a parent task: 0..n allowlisted server-local tools plus 0..n node capability tools.
 - Safe server-local tool execution for deterministic non-dangerous tools only, currently `aggregate_results`, `verify_result`, and `echo_sanitized`; no filesystem, network, or shell execution is available through this registry.
-- Assignment polling/claiming/completion records and privacy-filtered result records.
+- Assignment polling/claiming/completion records, privacy-safe node heartbeat/status records, and privacy-filtered result records.
+- A Server/Client split where Client liveness is reported through heartbeat/presence and Server liveness is detected by Client health polling.
+- A guided trial Client installer for first-run onboarding: generate a safe manifest, register, save local config, send initial heartbeat, optionally install a user systemd keep-online service or run a foreground heartbeat loop.
+- A2A-shaped JSON APIs: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, and response artifacts.
 - Contribution records that remain local-private unless explicit human consent is supplied for team/public visibility.
 - A standalone HTTP service and a bundled HTTP client.
 
@@ -93,10 +97,18 @@ Client CLI:
 
 ```bash
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 health
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 agent-card
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 nodes
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 register capability-manifest.yaml
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 post-task task-contract.yaml
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 route-task task-contract.yaml --required-tool terminal
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install --yes --node-id local-node-1 --task-type test_running --tool terminal --allow-auto-accept --keep-online
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat local-node-1
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat-loop local-node-1 --interval 30
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 loop capability-manifest.yaml --interval 30 --run-next
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "hello mesh"
+python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "image" --image screenshot.png --mime-type image/png
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 poll local-node-1
 python -m hermes_mesh.cli client --url http://127.0.0.1:8765 run-next capability-manifest.yaml
 ```
@@ -104,7 +116,10 @@ python -m hermes_mesh.cli client --url http://127.0.0.1:8765 run-next capability
 HTTP endpoints:
 
 - `GET /health`
+- `GET /.well-known/agent-card.json`, `GET /agent-card.json`, `GET /api/agent-card`
 - `GET /api/nodes`, `GET /api/nodes/{node_id}`, `POST /api/nodes`
+- `GET /api/nodes/statuses`, `POST /api/nodes/{node_id}/heartbeat`
+- `POST /api/a2a/messages`, `POST /api/a2a/tasks/send`, `GET /api/a2a/tasks`
 - `GET /api/tasks`, `POST /api/tasks`
 - `POST /api/tasks/plan`
 - `POST /api/tasks/plan-step`
@@ -112,6 +127,7 @@ HTTP endpoints:
 - `GET /api/assignments`, `POST /api/assignments`
 - `GET /api/nodes/{node_id}/assignments`
 - `POST /api/assignments/{assignment_id}/claim`
+- `POST /api/assignments/{assignment_id}/wake`
 - `POST /api/assignments/{assignment_id}/complete`
 - `GET /api/results`, `POST /api/results`
 
@@ -120,6 +136,16 @@ HTTP endpoints:
 HermesMesh is the planner/controller. For one parent task, the service may invoke 0..n server-local tools and 0..n nodes. A server-local invocation is an allowlisted deterministic tool call whose result is filtered and recorded locally. A node invocation is a single assigned subtask or partial operation selected by task type, required tools, and capability metadata. A node does not own the whole parent task unless the assigned subtask actually completes it.
 
 Mixed plan steps use explicit kinds: `server_tool_call`, `node_tool_call`, and `orchestration_tool_call`. A planning response maps those to `invoke_server_tool`, `invoke_node`, `orchestration_action`, `completed`, or `no_match`. Server-local builders reject private node transport/dispatch fields and reject non-allowlisted server tools. Nodes never directly call Server tools and never receive Server private tool definitions, node private transport commands, or dispatch commands in assignments.
+
+Server-initiated wake-up is supported only as a notification layer. A node may opt in with `transport.type: webhook` plus private `wake_url`/`wake_token` metadata. When `POST /api/assignments/{assignment_id}/wake` is called, the server sends only an `assignment_available` event containing `schema_version`, `assignment_id`, `node_id`, and `server_url`; the node must still poll, claim, execute locally, and complete the assignment. Public node views continue to expose only `transport.type`, never the wake URL, token, transport command, or dispatch command.
+
+Node heartbeat/status persistence is intentionally narrow. `POST /api/nodes/{node_id}/heartbeat` records a validated node id, `last_seen_at`, and a coarse reported state for local service bookkeeping. Public node APIs and the dashboard derive only `online`, `stale`, `offline`, or `never_seen` from `last_seen_at`; they do not expose environment variables, logs, skills, sessions, transport commands, dispatch commands, wake URLs, tokens, or private runtime details. Polling, claiming, completing, and `run-next` activity refreshes last-seen status through the same server-side status registry.
+
+## A2A Shape
+
+HermesMesh follows Google's A2A protocol shape as closely as practical with stdlib-only JSON APIs. The Server publishes an Agent Card at `/.well-known/agent-card.json`. Clients send envelopes to `POST /api/a2a/messages` with `role` (`user` or `agent`) and `parts`. Supported part shapes are text parts, file parts, and data parts. File parts can carry image content as base64 `bytes` or a `uri` plus `mimeType`. The Server responds with a task envelope containing `id`, `contextId`, `status`, `history`, and `artifacts`.
+
+This A2A surface is intentionally a content-transfer/API shape, not a private state channel. Agent Cards and public node views do not expose local skills, memory, sessions, logs, environment variables, secrets, wake URLs, tokens, transport commands, or dispatch commands.
 
 When a node completes an assignment, the service filters the result through the task contract, accumulates only the filtered output, records verification and a local-private contribution record, then returns a decision:
 

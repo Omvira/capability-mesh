@@ -29,12 +29,13 @@ def _json_request(
     payload: Mapping[str, Any] | None = None,
     timeout: float = 10.0,
 ) -> dict[str, Any] | list[dict[str, Any]]:
-    url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    url = base_url.rstrip("/") + normalized_path
     body = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/a2a+json, application/json"}
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json; charset=utf-8"
+        headers["Content-Type"] = "application/a2a+json; charset=utf-8"
     req = request.Request(url, data=body, headers=headers, method=method)
     try:
         with request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - caller chooses endpoint
@@ -65,6 +66,18 @@ class HermesMeshClient:
             raise HermesMeshClientError("health endpoint returned a list")
         return data
 
+    def server_is_healthy(self) -> bool:
+        try:
+            return self.health().get("ok") is True
+        except HermesMeshClientError:
+            return False
+
+    def agent_card(self) -> dict[str, Any]:
+        data = _json_request(self.base_url, "/.well-known/agent-card.json", timeout=self.timeout)
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("agent card endpoint returned a list")
+        return data
+
     def list_nodes(self) -> list[dict[str, Any]]:
         data = _json_request(self.base_url, "/api/nodes", timeout=self.timeout)
         if not isinstance(data, list):
@@ -87,6 +100,18 @@ class HermesMeshClient:
         )
         if not isinstance(data, dict):
             raise HermesMeshClientError("register endpoint returned a list")
+        return data
+
+    def heartbeat(self, node_id: str, *, status: str = "online") -> dict[str, Any]:
+        data = _json_request(
+            self.base_url,
+            f"/api/nodes/{quote(node_id)}/heartbeat",
+            method="POST",
+            payload={"status": status},
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("heartbeat endpoint returned a list")
         return data
 
     def post_task(self, task: Mapping[str, Any]) -> dict[str, Any]:
@@ -217,6 +242,30 @@ class HermesMeshClient:
         )
         if not isinstance(data, dict):
             raise HermesMeshClientError("complete endpoint returned a list")
+        return data
+
+    def wake_assignment(self, assignment_id: str) -> dict[str, Any]:
+        data = _json_request(
+            self.base_url,
+            f"/api/assignments/{quote(assignment_id)}/wake",
+            method="POST",
+            payload={},
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("wake endpoint returned a list")
+        return data
+
+    def send_a2a_message(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        data = _json_request(
+            self.base_url,
+            "/message:send",
+            method="POST",
+            payload={"message": dict(message)},
+            timeout=self.timeout,
+        )
+        if not isinstance(data, dict):
+            raise HermesMeshClientError("A2A message endpoint returned a list")
         return data
 
     def run_next_assignment(self, manifest: Mapping[str, Any]) -> dict[str, Any]:

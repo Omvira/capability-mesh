@@ -13,6 +13,8 @@ from urllib.parse import unquote, urlsplit
 
 from hermes_mesh.core import (
     CapabilityMeshValidationError,
+    build_a2a_task,
+    build_agent_card,
     build_task_assignment,
     claim_task_assignment,
     complete_task_assignment,
@@ -20,17 +22,22 @@ from hermes_mesh.core import (
     execute_plan_step,
     get_registered_node,
     list_node_assignments,
+    list_a2a_tasks,
     list_posted_tasks,
     list_registered_nodes,
     list_task_assignments,
     list_task_results,
     plan_next_node_call,
     post_task,
+    public_node_presence,
+    record_node_heartbeat,
+    record_a2a_task,
     record_task_assignment,
     record_task_result,
     register_node_manifest,
     route_task,
     validate_task_contract,
+    wake_assignment,
 )
 
 
@@ -48,7 +55,29 @@ def _resources_summary(resources: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def public_node_view(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _public_node_status(manifest: Mapping[str, Any], mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Return dashboard-safe status derived only from heartbeat timestamps."""
+
+    return public_node_presence(str(manifest.get("node_id")), mesh_home=mesh_home)
+
+
+def public_node_statuses(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for manifest in list_registered_nodes(mesh_home=mesh_home):
+        view = public_node_view(manifest, mesh_home=mesh_home)
+        rows.append(
+            {
+                "node_id": view.get("node_id"),
+                "display_name": view.get("display_name"),
+                "task_types": view.get("task_types", []),
+                "tools_available": view.get("tools_available", []),
+                "online_status": public_node_presence(str(manifest.get("node_id")), mesh_home=mesh_home),
+            }
+        )
+    return rows
+
+
+def public_node_view(manifest: Mapping[str, Any], mesh_home: str | Path | None = None) -> dict[str, Any]:
     """Return the dashboard-safe subset of a validated manifest."""
 
     capabilities = manifest.get("capabilities", {})
@@ -67,6 +96,7 @@ def public_node_view(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "auto_accept_task_types": list(policies.get("auto_accept_task_types", [])),
         },
         "transport": {"type": transport.get("type", "local")},
+        "online_status": _public_node_status(manifest, mesh_home=mesh_home),
         "privacy": {
             str(flag): "safe" if value is False else "exposed"
             for flag, value in sorted(privacy.items())
@@ -75,7 +105,7 @@ def public_node_view(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def public_nodes(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
-    return [public_node_view(node) for node in list_registered_nodes(mesh_home=mesh_home)]
+    return [public_node_view(node, mesh_home=mesh_home) for node in list_registered_nodes(mesh_home=mesh_home)]
 
 
 def _html_list(items: list[Any], class_name: str = "chip-list") -> str:
@@ -134,6 +164,7 @@ def _card_html(card: Mapping[str, Any]) -> str:
     summary_html = f'<p class="kanban-summary">{html.escape(_safe_text(summary))}</p>' if summary else ""
     return (
         '<article class="kanban-card">'
+        '<div class="mesh-thumb mesh-thumb--small" aria-hidden="true"><i></i><i></i><i></i></div>'
         '<div class="kanban-card__top">'
         f'<span class="kanban-card__type">{html.escape(str(card.get("type", "card")))}</span>'
         f'<span class="kanban-card__status">{html.escape(str(card.get("status", "unknown")))}</span>'
@@ -154,12 +185,54 @@ def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
     assignments = list_task_assignments(mesh_home)
     results = list_task_results(mesh_home)
     columns: list[dict[str, Any]] = [
-        {"id": "posted", "title": "Posted", "cards": []},
-        {"id": "assigned", "title": "Assigned", "cards": []},
-        {"id": "claimed", "title": "Claimed", "cards": []},
-        {"id": "completed", "title": "Completed", "cards": []},
-        {"id": "failed", "title": "Failed", "cards": []},
-        {"id": "results", "title": "Results", "cards": []},
+        {
+            "id": "posted",
+            "title": "Triage",
+            "legacy_title": "Posted",
+            "kanban_status": "triage",
+            "description": "New mesh tasks waiting for routing or decomposition.",
+            "cards": [],
+        },
+        {
+            "id": "assigned",
+            "title": "Ready",
+            "legacy_title": "Assigned",
+            "kanban_status": "ready",
+            "description": "Assignments selected for a node and ready to claim.",
+            "cards": [],
+        },
+        {
+            "id": "claimed",
+            "title": "Running",
+            "legacy_title": "Claimed",
+            "kanban_status": "running",
+            "description": "Claimed work currently being executed by a node lane.",
+            "cards": [],
+        },
+        {
+            "id": "completed",
+            "title": "Done",
+            "legacy_title": "Completed",
+            "kanban_status": "done",
+            "description": "Completed assignments with structured handoff metadata.",
+            "cards": [],
+        },
+        {
+            "id": "failed",
+            "title": "Blocked",
+            "legacy_title": "Failed",
+            "kanban_status": "blocked",
+            "description": "Failed or blocked work that needs human/operator attention.",
+            "cards": [],
+        },
+        {
+            "id": "results",
+            "title": "Results",
+            "legacy_title": "Results",
+            "kanban_status": "done",
+            "description": "Privacy-filtered result records and summaries.",
+            "cards": [],
+        },
     ]
     by_id = {column["id"]: column for column in columns}
     assigned_task_ids = {str(item.get("task_id")) for item in assignments}
@@ -205,12 +278,12 @@ def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
         by_id["results"]["cards"].append(
             {
                 "id": result.get("result_id"),
-                "type": "result",
-                "status": result.get("status"),
+                "type": "handoff",
+                "status": result.get("status") or "done",
                 "title": result.get("task_id"),
                 "summary": summary,
                 "chips": [result.get("node_id"), result.get("status")],
-                "meta": {"task": result.get("task_id"), "node": result.get("node_id")},
+                "meta": {"task": result.get("task_id"), "node": result.get("node_id"), "record": "result"},
             }
         )
 
@@ -232,12 +305,22 @@ def _render_kanban_board(board: Mapping[str, Any]) -> str:
     rendered_columns = []
     for column in board.get("columns", []):
         cards = "".join(_card_html(card) for card in column.get("cards", [])) or '<p class="kanban-empty">No cards</p>'
+        column_title = str(column.get("title", column.get("id")))
+        status = str(column.get("kanban_status") or column.get("id") or "")
+        description = column.get("description")
+        legacy_title = column.get("legacy_title")
+        legacy_html = f'<span class="sr-only">{html.escape(str(legacy_title))}</span>' if legacy_title else ""
+        description_html = f'<p class="kanban-column__hint">{html.escape(str(description))}{legacy_html}</p>' if description else legacy_html
         rendered_columns.append(
-            '<section class="kanban-column">'
+            f'<section class="kanban-column kanban-column--{html.escape(status)}" data-status="{html.escape(status)}">'
             '<div class="kanban-column__header">'
-            f'<h2>{html.escape(str(column.get("title", column.get("id"))))}</h2>'
+            '<div>'
+            f'<h2><span class="status-dot" aria-hidden="true"></span>{html.escape(column_title)}</h2>'
+            f'<small>{html.escape(status)}</small>'
+            '</div>'
             f'<span>{html.escape(str(column.get("count", 0)))}</span>'
             '</div>'
+            f'{description_html}'
             f'<div class="kanban-column__cards">{cards}</div>'
             '</section>'
         )
@@ -264,18 +347,31 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
             "</li>"
             for flag, status in node["privacy"].items()
         )
+        presence_raw = node.get("online_status")
+        presence: Mapping[str, Any] = presence_raw if isinstance(presence_raw, Mapping) else {}
+        presence_status = str(presence.get("status") or "unknown")
+        presence_label = str(presence.get("label") or presence_status).replace("_", " ")
+        if presence_status == "online":
+            presence_class = "good"
+        elif presence_status in {"offline"}:
+            presence_class = "bad"
+        else:
+            presence_class = "warn"
+        last_seen = presence.get("last_seen_at") or "no heartbeat yet"
         cards.append(
             "<article class=\"node-card\">"
-            "<div class=\"node-card__bar\"></div>"
             "<div class=\"node-card__top\">"
             "<div>"
             f"<p class=\"eyebrow\">Node {index:02d}</p>"
             f"<h2>{html.escape(str(node['display_name']))}</h2>"
             f"<p class=\"node-id\">{html.escape(str(node['node_id']))}</p>"
             "</div>"
+            "<div class=\"mesh-thumb\" aria-hidden=\"true\"><i></i><i></i><i></i></div>"
             "<div class=\"status-stack\">"
             f"<span class=\"pill {accepts_class}\">{'accepting tasks' if policies['accepts_tasks'] else 'paused'}</span>"
             f"<span class=\"pill {approval_class}\">{html.escape(approval_label)}</span>"
+            f"<span class=\"pill {presence_class}\">{html.escape(presence_label)}</span>"
+            f"<span class=\"pill warn\">last seen: {html.escape(str(last_seen))}</span>"
             "</div>"
             "</div>"
             "<div class=\"node-grid\">"
@@ -323,160 +419,203 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HermesMesh Dashboard</title>
+  <title>Hermes Mesh</title>
   <style>
     :root {{
-      color-scheme: dark;
-      --bg: #070a12;
-      --bg-soft: #0c1220;
-      --surface: rgba(15, 23, 42, 0.76);
-      --surface-strong: rgba(20, 30, 50, 0.92);
-      --line: rgba(148, 163, 184, 0.18);
-      --line-strong: rgba(148, 163, 184, 0.32);
-      --fg: #eef4ff;
-      --muted: #91a0b8;
-      --soft: #c6d3e8;
-      --accent: #79f2c0;
-      --accent-2: #8ab4ff;
-      --accent-3: #d7b7ff;
-      --good: #76f5b4;
-      --warn: #ffd166;
-      --bad: #ff8f9b;
-      --shadow: 0 22px 80px rgba(0, 0, 0, 0.38);
-      --radius: 24px;
+      color-scheme: light;
+      --paper: #efe7d2;
+      --paper-deep: #e2d5b7;
+      --surface: #f8f1df;
+      --surface-alt: #eadfca;
+      --ink: #211a14;
+      --muted: #756a5b;
+      --soft: #4d4439;
+      --line: #2d251d;
+      --line-soft: rgba(45, 37, 29, .28);
+      --accent: #9f3f27;
+      --accent-2: #235d50;
+      --accent-3: #b98a2f;
+      --good: #235d50;
+      --warn: #9f6d1b;
+      --bad: #9f3f27;
+      --shadow: 8px 8px 0 rgba(45, 37, 29, .16);
+      --radius: 0;
       --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --serif: "Playfair Display", Didot, "Bodoni 72", Georgia, "Times New Roman", serif;
     }}
     * {{ box-sizing: border-box; }}
-    html {{ min-height: 100%; background: var(--bg); }}
+    html {{ min-height: 100%; background: var(--paper); }}
     body {{
       margin: 0;
       min-height: 100vh;
-      color: var(--fg);
+      color: var(--ink);
       font: 15px/1.55 var(--sans);
       background:
-        radial-gradient(circle at 12% 8%, rgba(121, 242, 192, 0.16), transparent 28rem),
-        radial-gradient(circle at 82% 4%, rgba(138, 180, 255, 0.18), transparent 30rem),
-        linear-gradient(180deg, #080b14 0%, #0a1020 48%, #070a12 100%);
+        linear-gradient(90deg, rgba(45,37,29,.045) 1px, transparent 1px),
+        linear-gradient(rgba(45,37,29,.035) 1px, transparent 1px),
+        radial-gradient(circle at 14% 10%, rgba(185, 138, 47, .16), transparent 24rem),
+        radial-gradient(circle at 86% 3%, rgba(35, 93, 80, .12), transparent 26rem),
+        var(--paper);
+      background-size: 42px 42px, 42px 42px, auto, auto, auto;
     }}
     body::before {{
       content: "";
       position: fixed;
       inset: 0;
       pointer-events: none;
-      background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
-      background-size: 48px 48px;
-      mask-image: linear-gradient(to bottom, rgba(0,0,0,.7), transparent 72%);
+      background-image: radial-gradient(rgba(45,37,29,.11) .6px, transparent .8px);
+      background-size: 7px 7px;
+      opacity: .28;
     }}
     a {{ color: inherit; }}
-    .shell {{ width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 34px 0 56px; }}
+    .shell {{ width: min(1240px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 56px; }}
     .hero {{
       position: relative;
       overflow: hidden;
       border: 1px solid var(--line);
-      border-radius: 32px;
-      background: linear-gradient(135deg, rgba(15, 23, 42, .88), rgba(12, 18, 32, .68));
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(248, 241, 223, .96), rgba(226, 213, 183, .86));
       box-shadow: var(--shadow);
-      padding: clamp(24px, 5vw, 48px);
+      padding: 0;
       margin-bottom: 22px;
     }}
-    .hero::after {{
-      content: "";
-      position: absolute;
-      width: 420px;
-      height: 420px;
-      right: -140px;
-      top: -190px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(121, 242, 192, .2), transparent 64%);
-      filter: blur(4px);
-    }}
-    .hero__content {{ position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px; align-items: end; }}
-    .eyebrow {{ margin: 0 0 10px; color: var(--accent); font: 700 12px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }}
-    h1 {{ margin: 0; max-width: 840px; font-size: clamp(42px, 8vw, 86px); line-height: .9; letter-spacing: -.07em; text-wrap: balance; }}
-    .subtitle {{ margin: 22px 0 0; max-width: 760px; color: var(--soft); font-size: clamp(16px, 2vw, 19px); text-wrap: pretty; }}
+    .hero__content {{ position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 0; align-items: stretch; }}
+    .masthead {{ padding: clamp(24px, 5vw, 54px); border-right: 1px solid var(--line); }}
+    .issue-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); margin: 0 0 24px; color: var(--muted); font: 700 11px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; }}
+    .issue-meta span {{ display: block; padding: 0 10px 12px 0; }}
+    .eyebrow {{ margin: 0 0 10px; color: var(--accent); font: 800 11px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }}
+    h1 {{ margin: 0; max-width: 840px; font-family: var(--serif); font-size: clamp(48px, 9vw, 112px); font-weight: 700; line-height: .82; letter-spacing: -.06em; text-wrap: balance; }}
+    .subtitle {{ margin: 22px 0 0; max-width: 780px; color: var(--soft); font-size: clamp(16px, 2vw, 20px); text-wrap: pretty; }}
     .hero-actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }}
-    .button {{ display: inline-flex; align-items: center; min-height: 42px; padding: 0 15px; border: 1px solid var(--line-strong); border-radius: 999px; background: rgba(255,255,255,.06); color: var(--fg); text-decoration: none; font-weight: 700; }}
-    .button.primary {{ color: #04120d; background: linear-gradient(135deg, var(--accent), #b3ffe0); border-color: transparent; }}
-    .stats {{ display: grid; grid-template-columns: repeat(2, minmax(118px, 1fr)); gap: 12px; min-width: min(360px, 100%); }}
-    .stat {{ border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,.055); padding: 16px; backdrop-filter: blur(14px); }}
-    .stat strong {{ display: block; font-size: 34px; line-height: 1; letter-spacing: -.05em; }}
-    .stat span {{ display: block; margin-top: 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; }}
-    .notice {{ display: flex; gap: 12px; align-items: flex-start; border: 1px solid rgba(121,242,192,.24); border-radius: 22px; background: rgba(121,242,192,.08); padding: 14px 16px; color: var(--soft); margin-bottom: 22px; }}
-    .notice strong {{ color: var(--fg); }}
+    .button {{ display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 0; background: var(--surface); color: var(--ink); text-decoration: none; font: 800 12px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; box-shadow: 3px 3px 0 rgba(45,37,29,.14); }}
+    .button.primary {{ color: var(--surface); background: var(--ink); }}
+    .stats {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-left: 0; background: var(--line); gap: 1px; }}
+    .stat {{ min-height: 150px; border: 0; border-radius: 0; background: rgba(248, 241, 223, .9); color: var(--ink); padding: 18px; display: flex; flex-direction: column; justify-content: space-between; text-align: left; font: inherit; }}
+    button.stat {{ cursor: pointer; }}
+    .stat strong {{ display: block; font-family: var(--serif); font-size: 52px; line-height: .86; letter-spacing: -.05em; }}
+    .stat span {{ display: block; color: var(--muted); font: 800 11px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .1em; }}
+    .stat small {{ display: inline-flex; align-items: center; margin-top: 9px; color: var(--accent); font: 800 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }}
+    .notice {{ display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 0; background: rgba(35,93,80,.08); padding: 14px 16px; color: var(--soft); margin-bottom: 22px; box-shadow: 4px 4px 0 rgba(35,93,80,.12); }}
+    .notice strong {{ color: var(--ink); }}
     .cards {{ display: grid; gap: 18px; }}
-    .node-card {{ position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 16px 48px rgba(0,0,0,.22); }}
-    .node-card__bar {{ height: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3)); }}
-    .node-card__top {{ display: flex; justify-content: space-between; gap: 18px; padding: 24px 24px 18px; }}
-    .node-card h2 {{ margin: 0; font-size: clamp(23px, 3vw, 34px); line-height: 1.04; letter-spacing: -.045em; }}
+    .node-card {{ position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }}
+    .node-card__top {{ display: grid; grid-template-columns: minmax(0, 1fr) 180px auto; gap: 18px; padding: 22px; align-items: start; border-bottom: 1px solid var(--line); }}
+    .node-card h2 {{ margin: 0; font-family: var(--serif); font-size: clamp(28px, 4vw, 48px); line-height: .96; letter-spacing: -.045em; }}
     .node-id {{ margin: 10px 0 0; color: var(--muted); font: 13px/1.4 var(--mono); overflow-wrap: anywhere; }}
     .status-stack {{ display: flex; align-items: flex-end; flex-direction: column; gap: 8px; flex: 0 0 auto; }}
-    .pill {{ display: inline-flex; align-items: center; gap: 7px; min-height: 30px; border: 1px solid var(--line); border-radius: 999px; padding: 0 11px; background: rgba(255,255,255,.055); color: var(--soft); font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }}
-    .pill::before {{ content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 16px currentColor; }}
+    .pill {{ display: inline-flex; align-items: center; gap: 7px; min-height: 29px; border: 1px solid var(--line); border-radius: 0; padding: 0 10px; background: var(--surface-alt); color: var(--soft); font: 800 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }}
+    .pill::before {{ content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }}
     .pill.good {{ color: var(--good); }} .pill.warn {{ color: var(--warn); }} .pill.bad {{ color: var(--bad); }}
-    .node-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border-top: 1px solid var(--line); background: var(--line); }}
-    .panel {{ min-height: 150px; background: rgba(10, 16, 30, .66); padding: 18px; }}
+    .node-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); }}
+    .panel {{ min-height: 150px; background: rgba(248, 241, 223, .92); padding: 18px; }}
     .panel.span-2 {{ grid-column: span 2; }}
-    h3 {{ margin: 0 0 13px; color: var(--muted); font: 800 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }}
+    h3 {{ margin: 0 0 13px; color: var(--muted); font: 800 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }}
     ul {{ margin: 0; padding: 0; list-style: none; }}
     .chip-list {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-    .chip-list li {{ border: 1px solid rgba(138,180,255,.26); border-radius: 999px; padding: 7px 10px; color: #dbe7ff; background: rgba(138,180,255,.09); font: 700 13px/1 var(--mono); }}
-    .chip-list.compact li {{ color: #dffced; border-color: rgba(121,242,192,.24); background: rgba(121,242,192,.075); }}
+    .chip-list li {{ border: 1px solid var(--line); border-radius: 0; padding: 7px 10px; color: var(--ink); background: rgba(185,138,47,.12); font: 700 13px/1 var(--mono); }}
+    .chip-list.compact li {{ color: var(--accent-2); background: rgba(35,93,80,.08); }}
     .kv-list {{ display: grid; gap: 9px; }}
     .kv-list li, .privacy li {{ display: flex; justify-content: space-between; gap: 14px; align-items: baseline; color: var(--muted); }}
-    .kv-list strong {{ color: var(--fg); text-align: right; overflow-wrap: anywhere; }}
-    .transport span {{ display: block; color: var(--fg); font: 800 26px/1 var(--mono); letter-spacing: -.06em; }}
+    .kv-list strong {{ color: var(--ink); text-align: right; overflow-wrap: anywhere; }}
+    .transport span {{ display: block; color: var(--ink); font: 800 26px/1 var(--mono); letter-spacing: -.06em; }}
     .transport small {{ display: block; margin-top: 8px; color: var(--muted); }}
     .privacy {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }}
     .flag {{ font: 800 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }}
     .flag-safe {{ color: var(--good); }} .flag-exposed {{ color: var(--bad); }}
     .muted {{ color: var(--muted); }}
     .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
-    .empty-state {{ border: 1px dashed var(--line-strong); border-radius: var(--radius); background: rgba(15,23,42,.54); padding: clamp(24px, 5vw, 44px); }}
-    .empty-state h2 {{ margin: 0; font-size: clamp(26px, 4vw, 48px); letter-spacing: -.05em; }}
+    .empty-state {{ border: 1px dashed var(--line); border-radius: var(--radius); background: var(--surface); padding: clamp(24px, 5vw, 44px); }}
+    .empty-state h2 {{ margin: 0; font-family: var(--serif); font-size: clamp(30px, 5vw, 56px); letter-spacing: -.05em; }}
     .empty-state p:not(.eyebrow) {{ max-width: 700px; color: var(--soft); }}
     code {{ font-family: var(--mono); color: var(--accent); }}
 
+    .mesh-thumb {{ position: relative; min-height: 128px; border: 1px solid var(--line); background: linear-gradient(135deg, rgba(35,93,80,.12), transparent 42%), linear-gradient(45deg, transparent 48%, var(--line-soft) 49%, var(--line-soft) 51%, transparent 52%), var(--paper-deep); overflow: hidden; }}
+    .mesh-thumb::before, .mesh-thumb::after, .mesh-thumb i {{ content: ""; position: absolute; width: 11px; height: 11px; border: 1px solid var(--line); background: var(--surface); }}
+    .mesh-thumb::before {{ left: 18%; top: 20%; }}
+    .mesh-thumb::after {{ right: 17%; bottom: 18%; background: var(--accent-3); }}
+    .mesh-thumb i:nth-child(1) {{ left: 58%; top: 26%; background: var(--accent-2); }}
+    .mesh-thumb i:nth-child(2) {{ left: 34%; bottom: 21%; background: var(--accent); }}
+    .mesh-thumb i:nth-child(3) {{ right: 34%; top: 58%; }}
+    .mesh-thumb--small {{ min-height: 78px; margin-bottom: 12px; }}
+
     .mesh-kanban {{ margin: 22px 0; }}
     .section-heading {{ display: flex; justify-content: space-between; gap: 16px; align-items: end; margin: 28px 0 14px; }}
-    .section-heading h2 {{ margin: 0; font-size: clamp(25px, 4vw, 42px); letter-spacing: -.05em; }}
+    .section-heading h2 {{ margin: 0; font-family: var(--serif); font-size: clamp(32px, 5vw, 58px); line-height: .9; letter-spacing: -.05em; }}
     .section-heading p {{ margin: 6px 0 0; color: var(--muted); max-width: 760px; }}
-    .kanban-board {{ display: grid; grid-template-columns: repeat(6, minmax(220px, 1fr)); gap: 14px; overflow-x: auto; padding-bottom: 8px; }}
-    .kanban-column {{ min-width: 220px; border: 1px solid var(--line); border-radius: 22px; background: rgba(8, 13, 26, .72); box-shadow: 0 12px 36px rgba(0,0,0,.18); }}
-    .kanban-column__header {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 15px; border-bottom: 1px solid var(--line); }}
-    .kanban-column__header h2 {{ margin: 0; font-size: 15px; letter-spacing: -.02em; }}
-    .kanban-column__header span {{ display: inline-flex; min-width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--soft); font: 800 12px/1 var(--mono); }}
+    .kanban-board {{ display: grid; grid-template-columns: repeat(6, minmax(220px, 1fr)); gap: 14px; overflow-x: auto; padding: 0 8px 8px 0; }}
+    .kanban-column {{ min-width: 220px; border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 5px 5px 0 rgba(45,37,29,.12); }}
+    .kanban-column__header {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 14px 15px; border-bottom: 1px solid var(--line); }}
+    .kanban-column__header h2 {{ display: flex; align-items: center; gap: 8px; margin: 0; font: 800 13px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }}
+    .kanban-column__header small {{ display: block; margin-top: 7px; color: var(--muted); font: 700 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }}
+    .kanban-column__header > span {{ display: inline-flex; min-width: 26px; height: 26px; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 0; background: var(--surface-alt); color: var(--soft); font: 800 12px/1 var(--mono); }}
+    .status-dot {{ width: 9px; height: 9px; border: 1px solid var(--line); background: var(--accent-3); box-shadow: 2px 2px 0 rgba(45,37,29,.14); }}
+    .kanban-column--triage .status-dot {{ background: var(--accent-3); }}
+    .kanban-column--todo .status-dot {{ background: var(--muted); }}
+    .kanban-column--ready .status-dot {{ background: var(--accent-2); }}
+    .kanban-column--running .status-dot {{ background: #2f6fbb; }}
+    .kanban-column--blocked .status-dot {{ background: var(--bad); }}
+    .kanban-column--done .status-dot {{ background: var(--good); }}
+    .kanban-column__hint {{ margin: 0; padding: 10px 15px 0; min-height: 45px; color: var(--muted); font-size: 12px; line-height: 1.35; }}
     .kanban-column__cards {{ display: grid; gap: 10px; padding: 12px; }}
-    .kanban-card {{ border: 1px solid rgba(148,163,184,.18); border-radius: 18px; background: rgba(15,23,42,.82); padding: 13px; }}
+    .kanban-card {{ border: 1px solid var(--line); border-radius: 0; background: rgba(239,231,210,.72); padding: 12px; }}
     .kanban-card__top {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font: 800 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }}
-    .kanban-card h3 {{ margin: 11px 0 6px; color: var(--fg); font: 800 15px/1.22 var(--sans); letter-spacing: -.02em; text-transform: none; }}
+    .kanban-card h3 {{ margin: 11px 0 6px; color: var(--ink); font: 700 18px/1.08 var(--serif); letter-spacing: -.02em; text-transform: none; }}
     .kanban-id {{ margin: 0 0 8px; color: var(--muted); font: 11px/1.35 var(--mono); overflow-wrap: anywhere; }}
     .kanban-summary {{ margin: 8px 0; color: var(--soft); font-size: 13px; }}
     .mini-chip-row {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }}
-    .mini-chip {{ border: 1px solid rgba(121,242,192,.22); border-radius: 999px; padding: 4px 7px; color: #dffced; background: rgba(121,242,192,.07); font: 700 10px/1 var(--mono); }}
+    .mini-chip {{ border: 1px solid var(--line); border-radius: 0; padding: 4px 7px; color: var(--accent-2); background: rgba(35,93,80,.07); font: 700 10px/1 var(--mono); }}
     .kanban-meta {{ display: grid; gap: 5px; margin-top: 10px; }}
     .kanban-meta li {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }}
-    .kanban-meta strong {{ color: var(--soft); text-align: right; overflow-wrap: anywhere; }}
+    .kanban-meta strong {{ color: var(--ink); text-align: right; overflow-wrap: anywhere; }}
     .kanban-empty {{ margin: 0; color: var(--muted); font-size: 13px; }}
+    .nodes-drawer[hidden] {{ display: none; }}
+    .nodes-drawer {{ position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 520px); background: rgba(33,26,20,.32); }}
+    .nodes-drawer__shade {{ border: 0; background: transparent; }}
+    .nodes-drawer__panel {{ min-height: 100vh; border-left: 1px solid var(--line); background: var(--surface); box-shadow: -8px 0 0 rgba(45,37,29,.14); padding: 22px; overflow: auto; }}
+    .nodes-drawer__top {{ display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid var(--line); }}
+    .nodes-drawer__top h2 {{ margin: 0; font-family: var(--serif); font-size: 42px; line-height: .9; letter-spacing: -.05em; }}
+    .nodes-close {{ width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 0; background: var(--ink); color: var(--surface); font: 900 20px/1 var(--mono); cursor: pointer; }}
+    .nodes-list {{ display: grid; gap: 12px; margin-top: 18px; }}
+    .node-row {{ border: 1px solid var(--line); border-radius: 0; background: rgba(239,231,210,.7); padding: 14px; }}
+    .node-row__top {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }}
+    .node-row h3 {{ margin: 0 0 5px; color: var(--ink); font: 700 22px/1.05 var(--serif); letter-spacing: -.02em; text-transform: none; }}
+    .node-row__id {{ margin: 0; color: var(--muted); font: 11px/1.35 var(--mono); overflow-wrap: anywhere; }}
+    .node-row__caps {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }}
+    .status-pill {{ display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 0; padding: 7px 9px; background: var(--surface-alt); font: 900 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }}
+    .status-pill::before {{ content: ""; width: 7px; height: 7px; border: 1px solid currentColor; border-radius: 50%; background: currentColor; }}
+    .status-pill--online {{ color: var(--good); }} .status-pill--offline, .status-pill--error, .status-pill--timeout {{ color: var(--bad); }} .status-pill--stale, .status-pill--never_seen, .status-pill--unknown {{ color: var(--warn); }}
+    .nodes-loading, .nodes-error {{ margin-top: 18px; color: var(--muted); }}
+    .nodes-error {{ color: var(--bad); }}
+    .nodes-template-source {{ display: none; }}
     @media (max-width: 900px) {{
       .hero__content {{ grid-template-columns: 1fr; }}
+      .masthead {{ border-right: 0; border-bottom: 1px solid var(--line); }}
       .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .node-card__top {{ grid-template-columns: minmax(0, 1fr) 160px; }}
+      .status-stack {{ grid-column: 1 / -1; align-items: flex-start; flex-direction: row; flex-wrap: wrap; }}
       .node-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .panel.span-2 {{ grid-column: span 2; }}
     }}
     @media (max-width: 620px) {{
       .shell {{ width: min(100% - 20px, 1180px); padding-top: 10px; }}
-      .hero {{ border-radius: 24px; }}
       .hero__content, .node-card__top {{ display: block; }}
+      .issue-meta {{ grid-template-columns: 1fr; gap: 6px; }}
+      .issue-meta span {{ padding-bottom: 4px; }}
+      h1 {{ font-size: clamp(44px, 17vw, 72px); }}
+      .mesh-thumb {{ margin-top: 16px; }}
       .stats {{ margin-top: 22px; }}
       .status-stack {{ align-items: flex-start; flex-direction: row; flex-wrap: wrap; margin-top: 16px; }}
       .node-grid, .privacy {{ grid-template-columns: 1fr; }}
       .panel.span-2 {{ grid-column: span 1; }}
+      .nodes-drawer {{ grid-template-columns: 1fr; }}
+      .nodes-drawer__shade {{ display: none; }}
+      .nodes-drawer__panel {{ border-left: 0; }}
     }}
     @media (prefers-reduced-motion: no-preference) {{
-      .node-card, .button {{ transition: transform .18s ease, border-color .18s ease, background .18s ease; }}
-      .node-card:hover {{ transform: translateY(-2px); border-color: rgba(121,242,192,.34); }}
-      .button:hover {{ transform: translateY(-1px); background: rgba(255,255,255,.09); }}
+      .node-card, .button {{ transition: transform .16s ease, box-shadow .16s ease, background .16s ease; }}
+      .node-card:hover {{ transform: translate(-2px, -2px); box-shadow: 10px 10px 0 rgba(45,37,29,.18); }}
+      .button:hover {{ transform: translate(-1px, -1px); box-shadow: 5px 5px 0 rgba(45,37,29,.18); }}
     }}
   </style>
 </head>
@@ -484,9 +623,14 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
   <main class="shell">
     <section class="hero">
       <div class="hero__content">
-        <div>
+        <div class="masthead">
+          <div class="issue-meta" aria-label="Dashboard issue metadata">
+            <span>Issue 01</span>
+            <span>Local Mesh Catalog</span>
+            <span>Privacy First</span>
+          </div>
           <p class="eyebrow">Privacy-first capability network</p>
-          <h1>HermesMesh Dashboard</h1>
+          <h1>Hermes Mesh</h1>
           <p class="subtitle">Registered Hermes nodes expose task-completion capability, not private local state. Skills, memory, sessions, logs, env vars, transport commands, and secrets stay off the mesh.</p>
           <div class="hero-actions">
             <a class="button primary" href="/api/nodes">View node JSON</a>
@@ -494,7 +638,7 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
           </div>
         </div>
         <div class="stats" aria-label="Mesh summary">
-          <div class="stat"><strong>{_stat_value(node_count)}</strong><span>nodes</span></div>
+          <button class="stat" type="button" id="nodesStat" aria-haspopup="dialog" aria-controls="nodesDrawer"><strong>{_stat_value(node_count)}</strong><span>nodes</span><small>Open node list</small></button>
           <div class="stat"><strong>{_stat_value(task_type_count)}</strong><span>task types</span></div>
           <div class="stat"><strong>{_stat_value(tool_count)}</strong><span>tools</span></div>
           <div class="stat"><strong>{_stat_value(auto_accept_count)}</strong><span>auto-ready</span></div>
@@ -508,21 +652,80 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
     <section class="mesh-kanban" aria-label="HermesMesh task board">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Hermes-style Kanban</p>
-          <h2>Mesh work board</h2>
-          <p>Track parent tasks, node assignments, claimed work, completions, failures, and privacy-filtered results without exposing private node transport or local state.</p>
+          <p class="eyebrow">Hermes plugin Kanban</p>
+          <h2>KANBAN</h2>
+          <p>Mirror the Hermes Kanban lifecycle: triage, todo, ready, running, blocked, and done. Cards stay privacy-filtered while surfacing task ids, node lanes, assignment status, handoff summaries, and result counts.</p>
         </div>
         <a class="button" href="/api/board">View board JSON</a>
       </div>
       <div class="kanban-board">{_render_kanban_board(board)}</div>
     </section>
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Capability nodes</p>
-        <h2>Registered nodes</h2>
-      </div>
+    <div class="nodes-drawer" id="nodesDrawer" role="dialog" aria-modal="true" aria-labelledby="nodesDrawerTitle" hidden>
+      <button class="nodes-drawer__shade" type="button" data-close-nodes aria-label="Close registered nodes list"></button>
+      <aside class="nodes-drawer__panel">
+        <div class="nodes-drawer__top">
+          <div>
+            <p class="eyebrow">Registered nodes</p>
+            <h2 id="nodesDrawerTitle">Nodes</h2>
+            <p class="subtitle">Names, declared capabilities, and current online status only. Private transports and commands stay hidden.</p>
+          </div>
+          <button class="nodes-close" type="button" data-close-nodes aria-label="Close">×</button>
+        </div>
+        <p class="nodes-loading" id="nodesLoading">Loading node status…</p>
+        <p class="nodes-error" id="nodesError" hidden></p>
+        <div class="nodes-list" id="nodesList"></div>
+      </aside>
     </div>
-    <section class="cards" aria-label="Registered Hermes nodes">{content}</section>
+    <script>
+      (() => {{
+        const trigger = document.getElementById('nodesStat');
+        const drawer = document.getElementById('nodesDrawer');
+        const list = document.getElementById('nodesList');
+        const loading = document.getElementById('nodesLoading');
+        const error = document.getElementById('nodesError');
+        const closeButtons = document.querySelectorAll('[data-close-nodes]');
+        const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
+        const chips = (items) => (items || []).map((item) => `<span class="mini-chip">${{esc(item)}}</span>`).join('') || '<span class="muted">none</span>';
+        const renderRows = (nodes) => {{
+          if (!nodes.length) {{
+            list.innerHTML = '<section class="empty-state"><p class="eyebrow">No nodes registered</p><h2>Waiting for Hermes instances to join.</h2></section>';
+            return;
+          }}
+          list.innerHTML = nodes.map((node) => {{
+            const health = node.online_status || {{ label: 'unknown', status: 'unknown' }};
+            const label = String(health.label || health.status || 'unknown');
+            const statusClass = String(health.status || label || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+            return `<article class="node-row">
+              <div class="node-row__top">
+                <div><h3>${{esc(node.display_name || node.node_id)}}</h3><p class="node-row__id">${{esc(node.node_id)}}</p></div>
+                <span class="status-pill status-pill--${{esc(statusClass)}}">${{esc(label)}}</span>
+              </div>
+              <div class="node-row__caps" aria-label="Node capabilities">${{chips(node.task_types)}}${{chips(node.tools_available)}}</div>
+            </article>`;
+          }}).join('');
+        }};
+        const openDrawer = async () => {{
+          drawer.hidden = false;
+          loading.hidden = false;
+          error.hidden = true;
+          list.innerHTML = '';
+          try {{
+            const response = await fetch('/api/nodes/statuses', {{ headers: {{ 'Accept': 'application/json' }} }});
+            if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+            renderRows(await response.json());
+          }} catch (err) {{
+            error.textContent = `Unable to load node status: ${{err.message}}`;
+            error.hidden = false;
+          }} finally {{
+            loading.hidden = true;
+          }}
+        }};
+        const closeDrawer = () => {{ drawer.hidden = true; }};
+        trigger?.addEventListener('click', openDrawer);
+        closeButtons.forEach((button) => button.addEventListener('click', closeDrawer));
+        document.addEventListener('keydown', (event) => {{ if (event.key === 'Escape' && !drawer.hidden) closeDrawer(); }});
+      }})();
+    </script>
   </main>
 </body>
 </html>
@@ -537,8 +740,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 self._send_json({"ok": True})
+            elif path in {"/.well-known/agent-card.json", "/agent-card.json", "/api/agent-card"}:
+                self._send_json(build_agent_card(server_url=self._server_base_url()), content_type="application/a2a+json; charset=utf-8")
             elif path == "/api/nodes":
                 self._send_json(public_nodes(self.mesh_home))
+            elif path == "/api/nodes/statuses":
+                self._send_json(public_node_statuses(self.mesh_home))
             elif path == "/api/board":
                 self._send_json(public_board(self.mesh_home))
             elif path.startswith("/api/nodes/"):
@@ -550,13 +757,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     node_id = unquote(suffix)
                     node = get_registered_node(node_id, mesh_home=self.mesh_home)
-                    self._send_json(public_node_view(node))
+                    self._send_json(public_node_view(node, mesh_home=self.mesh_home))
             elif path == "/api/tasks":
                 self._send_json(list_posted_tasks(self.mesh_home))
             elif path == "/api/assignments":
                 self._send_json(list_task_assignments(self.mesh_home))
             elif path == "/api/results":
                 self._send_json(list_task_results(self.mesh_home))
+            elif path == "/api/a2a/tasks":
+                self._send_json(list_a2a_tasks(self.mesh_home))
             elif path == "/":
                 self._send_html(render_dashboard(public_nodes(self.mesh_home), public_board(self.mesh_home)))
             else:
@@ -571,6 +780,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/nodes":
                 saved = register_node_manifest(data, mesh_home=self.mesh_home)
                 self._send_json({"ok": True, "path": str(saved), "node_id": data.get("node_id")})
+            elif path in {"/message:send", "/api/a2a/messages", "/api/a2a/tasks/send"}:
+                message = data.get("message", data)
+                task = build_a2a_task(message)
+                record_a2a_task(task, mesh_home=self.mesh_home)
+                self._send_json(task, content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/api/nodes/") and path.endswith("/heartbeat"):
+                node_id = unquote(path.removeprefix("/api/nodes/").removesuffix("/heartbeat"))
+                status = data.get("status", "online")
+                if not isinstance(status, str):
+                    raise CapabilityMeshValidationError("status must be a string")
+                record_node_heartbeat(node_id, status, mesh_home=self.mesh_home)
+                node = get_registered_node(node_id, mesh_home=self.mesh_home)
+                self._send_json({"ok": True, "node": public_node_view(node, mesh_home=self.mesh_home)})
             elif path == "/api/tasks":
                 saved = post_task(data, mesh_home=self.mesh_home)
                 self._send_json({"ok": True, "path": str(saved), "task_id": data.get("task_id")})
@@ -646,6 +868,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     mesh_home=self.mesh_home,
                 )
                 self._send_json({"ok": True, **completion})
+            elif path.startswith("/api/assignments/") and path.endswith("/wake"):
+                assignment_id = unquote(path.removeprefix("/api/assignments/").removesuffix("/wake"))
+                wake = wake_assignment(
+                    assignment_id,
+                    server_url=self._server_base_url(),
+                    mesh_home=self.mesh_home,
+                )
+                self._send_json({"ok": wake.get("status") in {"sent", "unsupported"}, "wake": wake})
             elif path == "/api/results":
                 task = data.get("task") or data.get("contract")
                 result = data.get("result", data)
@@ -661,20 +891,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
-            raise CapabilityMeshValidationError("JSON request body is required")
+            return {}
         raw = self.rfile.read(length).decode("utf-8")
         data = json.loads(raw)
         if not isinstance(data, dict):
             raise CapabilityMeshValidationError("JSON request body must be an object")
         return data
 
+    def _server_base_url(self) -> str:
+        host = self.headers.get("Host") or f"{self.server.server_address[0]}:{self.server.server_address[1]}"
+        scheme = self.headers.get("X-Forwarded-Proto", "http")
+        return f"{scheme}://{host}"
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-    def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK, *, content_type: str = "application/json; charset=utf-8") -> None:
         body = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

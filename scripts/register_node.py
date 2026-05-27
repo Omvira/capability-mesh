@@ -70,6 +70,23 @@ def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "machine": platform.machine(),
             "python": platform.python_version(),
         }
+    if args.wake_url:
+        transport: dict[str, Any] = {
+            "type": "webhook",
+            "wake_url": args.wake_url,
+            "wake_timeout_seconds": args.wake_timeout_seconds,
+            "timeout_seconds": args.timeout_seconds,
+        }
+        if args.wake_token:
+            transport["wake_token"] = args.wake_token
+        if args.transport_command:
+            transport["command"] = command
+    else:
+        transport = {
+            "type": "local",
+            "command": command,
+            "timeout_seconds": args.timeout_seconds,
+        }
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "node_id": args.node_id,
@@ -84,11 +101,7 @@ def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "auto_accept_task_types": list(args.auto_accept_task_type or []),
             "requires_human_approval": not args.allow_auto_accept,
         },
-        "transport": {
-            "type": "local",
-            "command": command,
-            "timeout_seconds": args.timeout_seconds,
-        },
+        "transport": transport,
         "privacy": dict(DEFAULT_PRIVACY),
         "result_policy": {
             "allow": list(DEFAULT_ALLOWED_RESULT_FIELDS),
@@ -129,6 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transport-command", action="append", help="Command argv part for future local dispatch; repeatable; default: hermes chat -q")
     parser.add_argument("--dispatch-command", action="append", help="Optional dispatch command argv part; repeatable")
     parser.add_argument("--timeout-seconds", type=int, default=120, help="Transport timeout metadata, 1..300")
+    parser.add_argument("--wake-url", help="Webhook URL this node exposes for notification-only assignment wake-up")
+    parser.add_argument("--wake-token", help="Optional shared wake token sent as X-HermesMesh-Wake-Token; use only over trusted networks/HTTPS")
+    parser.add_argument("--wake-timeout-seconds", type=int, default=15, help="Wake webhook timeout metadata, 1..60")
     parser.add_argument("--allow-auto-accept", action="store_true", help="Mark node as not requiring human approval")
     parser.add_argument("--auto-accept-task-type", action="append", help="Task type this node auto-accepts; repeatable")
     parser.add_argument("--no-accept-tasks", action="store_true", help="Register as not currently accepting tasks")
@@ -143,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.timeout_seconds < 1 or args.timeout_seconds > 300:
         raise SystemExit("--timeout-seconds must be between 1 and 300")
+    if args.wake_timeout_seconds < 1 or args.wake_timeout_seconds > 60:
+        raise SystemExit("--wake-timeout-seconds must be between 1 and 60")
+    if args.wake_url and not (args.wake_url.startswith("http://") or args.wake_url.startswith("https://")):
+        raise SystemExit("--wake-url must be an http(s) URL")
     auto_accept = set(args.auto_accept_task_type or [])
     task_types = set(args.task_type or [])
     unknown = auto_accept - task_types
