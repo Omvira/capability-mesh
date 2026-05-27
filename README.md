@@ -7,6 +7,295 @@ result filtering, verification primitives, mixed server/node task orchestration,
 
 Hermes Agent is only one possible adapter/node runtime. The mesh core does not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
 
+
+
+## 中文教程：Server 与 Client 快速使用
+
+本节使用占位地址，避免暴露任何真实机器、局域网或个人环境信息。请根据自己的部署替换：
+
+- Server 监听地址：`<SERVER_HOST>`，例如 `localhost`、内网域名、VPN 地址或反向代理域名。
+- Server 端口：`<SERVER_PORT>`，默认示例为 `8765`。
+- Server URL：`http://<SERVER_HOST>:<SERVER_PORT>`。
+- Client 节点 ID：`<CLIENT_NODE_ID>`，例如 `remote-client-a`。
+
+安全建议：
+
+- 只在可信本机、可信内网或 VPN 中使用 `--host 0.0.0.0`。
+- 如果需要公网访问，请放在 HTTPS 反向代理、认证层、VPN 或隧道后面。
+- 不要把 token、密码、API key、私有日志、session、memory、skills、环境变量或本机绝对路径写进 manifest、README、issue 或聊天记录。
+- Client 公开的是“能力标签”，不是私有数据。`task_types` 和 `tools_available` 应只写泛化能力，例如 `code_review`、`test_running`、`python`、`git`。
+
+### 1. 启动 Server
+
+在 Server 机器上进入 HermesMesh 项目目录，启动 HTTP 服务：
+
+```bash
+python3 -m hermes_mesh.cli --mesh-home ~/.hermes-mesh server \
+  --host localhost \
+  --port 8765
+```
+
+如果要让同一可信内网或 VPN 中的 Client 接入，可以监听所有网卡：
+
+```bash
+python3 -m hermes_mesh.cli --mesh-home ~/.hermes-mesh server \
+  --host 0.0.0.0 \
+  --port 8765
+```
+
+检查 Server 是否在线：
+
+```bash
+curl -fsS http://<SERVER_HOST>:<SERVER_PORT>/health
+```
+
+正常会返回类似：
+
+```json
+{ "ok": true }
+```
+
+查看 A2A Agent Card：
+
+```bash
+curl -fsS http://<SERVER_HOST>:<SERVER_PORT>/.well-known/agent-card.json
+```
+
+### 2. 使用交互式 Client 安装器接入
+
+在 Client 机器上运行：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  install
+```
+
+安装器会逐步询问：
+
+- Client node id
+- display name
+- 可公开的 task types
+- 可公开的 tools/capability labels
+- 是否允许自动接受特定任务类型
+- 是否生成本地 manifest
+- 是否立即启动 heartbeat loop 让 Client 保持在线
+
+生成的 manifest 默认保存到：
+
+```text
+~/.hermes-mesh/client/<CLIENT_NODE_ID>.manifest.json
+```
+
+### 3. 非交互式注册并保持在线
+
+如果你已经知道要公开的能力标签，可以一行注册并启动前台 heartbeat loop：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  install \
+  --yes \
+  --node-id <CLIENT_NODE_ID> \
+  --display-name "Remote Client" \
+  --task-type code_review \
+  --task-type test_running \
+  --tool hermes \
+  --tool python \
+  --allow-auto-accept \
+  --keep-online \
+  --interval 30
+```
+
+只注册并发送一次 heartbeat，不常驻在线：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  install \
+  --yes \
+  --node-id <CLIENT_NODE_ID> \
+  --task-type code_review \
+  --tool hermes \
+  --once
+```
+
+### 4. 直接使用独立安装脚本
+
+如果不想先安装整个项目，可以使用 stdlib-only 的安装脚本。发布后可以用：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/install_client.py | \
+  python3 - \
+    --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
+    --node-id <CLIENT_NODE_ID> \
+    --task-type code_review \
+    --tool hermes \
+    --keep-online
+```
+
+本地仓库中也可以直接运行：
+
+```bash
+python3 scripts/install_client.py \
+  --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
+  --node-id <CLIENT_NODE_ID> \
+  --task-type code_review \
+  --tool hermes \
+  --keep-online
+```
+
+### 5. 让 Client 以 systemd user service 常驻
+
+在 Linux 用户环境中，可以让安装脚本写入 user-level systemd service：
+
+```bash
+python3 scripts/install_client.py \
+  --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
+  --node-id <CLIENT_NODE_ID> \
+  --task-type code_review \
+  --tool hermes \
+  --install-systemd
+```
+
+然后按脚本提示执行：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-mesh-client-<CLIENT_NODE_ID>.service
+```
+
+查看状态：
+
+```bash
+systemctl --user status hermes-mesh-client-<CLIENT_NODE_ID>.service
+```
+
+注意：如果使用 `curl | python3 -` 方式运行，脚本来自 stdin，不能可靠生成 systemd 的 `ExecStart` 路径。需要先把脚本保存为本地文件再使用 `--install-systemd`。
+
+### 6. 验证 Client 已接入
+
+从任意能访问 Server 的机器查看节点列表：
+
+```bash
+curl -fsS http://<SERVER_HOST>:<SERVER_PORT>/api/nodes
+```
+
+查看某个 Client：
+
+```bash
+curl -fsS http://<SERVER_HOST>:<SERVER_PORT>/api/nodes/<CLIENT_NODE_ID>
+```
+
+如果 Client 正在发送 heartbeat，公开状态中会出现类似：
+
+```json
+{
+  "online_status": {
+    "status": "online",
+    "label": "online"
+  }
+}
+```
+
+### 7. 测试 A2A 文本和图片消息
+
+发送文本：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  send-a2a --text "hello mesh"
+```
+
+发送图片：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  send-a2a \
+  --text "inspect image" \
+  --image /path/to/example.png \
+  --mime-type image/png
+```
+
+等价 HTTP API：
+
+```bash
+curl -X POST http://<SERVER_HOST>:<SERVER_PORT>/message:send \
+  -H 'Content-Type: application/a2a+json' \
+  -H 'Accept: application/a2a+json' \
+  -d '{
+    "message": {
+      "role": "ROLE_USER",
+      "parts": [
+        {"text": "hello mesh"},
+        {
+          "raw": "<BASE64_IMAGE_BYTES>",
+          "filename": "example.png",
+          "mediaType": "image/png"
+        }
+      ]
+    }
+  }'
+```
+
+### 8. Client 工作循环
+
+如果已经有 manifest 文件，也可以直接启动 Client loop：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  loop ~/.hermes-mesh/client/<CLIENT_NODE_ID>.manifest.json \
+  --interval 30
+```
+
+如果希望 Client 自动领取并执行分配给它的任务，加上：
+
+```bash
+--run-next
+```
+
+完整示例：
+
+```bash
+python3 -m hermes_mesh.cli client \
+  --url http://<SERVER_HOST>:<SERVER_PORT> \
+  loop ~/.hermes-mesh/client/<CLIENT_NODE_ID>.manifest.json \
+  --interval 30 \
+  --run-next
+```
+
+这个循环会：
+
+1. 轮询 `/health` 检测 Server 是否在线。
+2. 定期发送 heartbeat，让 Server 看到 Client online。
+3. 可选地 poll/claim/execute/complete 分配给该 Client 的任务。
+
+### 9. 隐私边界
+
+HermesMesh Client onboarding 默认不上传：
+
+- 本地 skills
+- memory
+- session history
+- reasoning trace
+- raw logs
+- environment variables
+- secrets、token、password、API key
+- 本机私有路径或本地命令输出
+
+公开节点信息应只包含：
+
+- `node_id`
+- `display_name`
+- `task_types`
+- `tools_available`
+- 安全的 resource 标签
+- heartbeat 派生的在线状态
+
+
 ## Install for development
 
 ```bash
@@ -31,7 +320,7 @@ python -m hermes_mesh.cli --mesh-home /tmp/mesh route-task task.yaml --json
 Run the HermesMesh service from this project; it exposes both the dashboard and JSON APIs:
 
 ```bash
-python -m hermes_mesh.cli --mesh-home /tmp/mesh server --host 127.0.0.1 --port 8765
+python -m hermes_mesh.cli --mesh-home /tmp/mesh server --host localhost --port 8765
 # For trusted LAN/VPN access only:
 python -m hermes_mesh.cli --mesh-home /tmp/mesh server --host 0.0.0.0 --port 8765
 ```
@@ -78,13 +367,13 @@ HermesMesh also exposes a stdlib-only A2A-shaped JSON surface. `GET /.well-known
 For a first remote Client, use the interactive installer. It guides the user through Server URL, node id, public task types/tools, optional auto-accept policy, registration, and a foreground heartbeat loop to keep the Client online:
 
 ```bash
-python3 -m hermes_mesh.cli client --url http://10.0.16.11:8765 install
+python3 -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install
 ```
 
 Non-interactive one-shot registration plus one heartbeat:
 
 ```bash
-python3 -m hermes_mesh.cli client --url http://10.0.16.11:8765 install \
+python3 -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install \
   --yes \
   --node-id remote-client-a \
   --display-name "Remote Client A" \
@@ -97,7 +386,7 @@ python3 -m hermes_mesh.cli client --url http://10.0.16.11:8765 install \
 Keep the Client online in the foreground:
 
 ```bash
-python3 -m hermes_mesh.cli client --url http://10.0.16.11:8765 install \
+python3 -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install \
   --yes --node-id remote-client-a --task-type smoke --tool hermes \
   --allow-auto-accept --keep-online --interval 30
 ```
@@ -106,7 +395,7 @@ The generated manifest is saved under `~/.hermes-mesh/client/`. The installer is
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/install_client.py | \
-  python3 - --mesh-url http://10.0.16.11:8765 --keep-online
+  python3 - --mesh-url http://<SERVER_HOST>:<SERVER_PORT> --keep-online
 ```
 
 It does not read or upload local skills, memory, sessions, raw logs, environment variables, credentials, or secrets.
@@ -114,24 +403,24 @@ It does not read or upload local skills, memory, sessions, raw logs, environment
 Use the bundled client CLI against a running service:
 
 ```bash
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 health
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 agent-card
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 nodes
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 register manifest.yaml
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 post-task task.yaml
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 route-task task.yaml --required-tool python
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install --yes --node-id local-node --task-type smoke --tool hermes --allow-auto-accept --keep-online
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat local-node
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat-loop local-node --interval 30
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 loop manifest.yaml --interval 30 --run-next
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "hello mesh"
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "inspect image" --image screenshot.png --mime-type image/png
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 wake task-001-local-node
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 poll local-node
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 claim task-001-local-node --node-id local-node
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 complete task-001-local-node result.yaml --node-id local-node
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 run-next manifest.yaml
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> health
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> agent-card
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> nodes
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> register manifest.yaml
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> post-task task.yaml
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> route-task task.yaml --required-tool python
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install --yes --node-id local-node --task-type smoke --tool hermes --allow-auto-accept --keep-online
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> heartbeat local-node
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> heartbeat-loop local-node --interval 30
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> loop manifest.yaml --interval 30 --run-next
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> send-a2a --text "hello mesh"
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> send-a2a --text "inspect image" --image screenshot.png --mime-type image/png
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> wake task-001-local-node
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> poll local-node
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> claim task-001-local-node --node-id local-node
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> complete task-001-local-node result.yaml --node-id local-node
+python -m hermes_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> run-next manifest.yaml
 ```
 
 Python client:
@@ -139,7 +428,7 @@ Python client:
 ```python
 from hermes_mesh.client import HermesMeshClient
 
-client = HermesMeshClient("http://127.0.0.1:8765")
+client = HermesMeshClient("http://<SERVER_HOST>:<SERVER_PORT>")
 print(client.health())
 print(client.list_nodes())
 ```
@@ -159,7 +448,7 @@ A remote Hermes instance can register with a running HermesMesh service using on
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/register_node.py | \
   python3 - \
-    --mesh-url http://10.0.16.11:8765 \
+    --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
     --node-id hermes-node-a \
     --display-name "Hermes Node A" \
     --task-type code_review \
@@ -173,13 +462,13 @@ Preview the manifest without registering:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/register_node.py | \
-  python3 - --mesh-url http://10.0.16.11:8765 --task-type code_review --tool hermes --dry-run
+  python3 - --mesh-url http://<SERVER_HOST>:<SERVER_PORT> --task-type code_review --tool hermes --dry-run
 ```
 
 After registration, verify from any machine that can reach the service:
 
 ```bash
-curl -fsSL http://10.0.16.11:8765/api/nodes
+curl -fsSL http://<SERVER_HOST>:<SERVER_PORT>/api/nodes
 ```
 
 ### Register a wake-up capable remote client
@@ -191,7 +480,7 @@ On the remote machine, first run your wake receiver/client adapter, for example 
 ```bash
 # Example only: your adapter should verify X-HermesMesh-Wake-Token, then run poll/claim/complete.
 python3 wake_client_adapter.py --listen 0.0.0.0 --port 9876 \
-  --mesh-url http://10.0.16.11:8765 \
+  --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
   --node-id remote-node-a
 ```
 
@@ -200,14 +489,14 @@ Then register that node with `transport.type: webhook` by passing `--wake-url` t
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/register_node.py | \
   python3 - \
-    --mesh-url http://10.0.16.11:8765 \
+    --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
     --node-id remote-node-a \
     --display-name "Remote Node A" \
     --task-type code_review \
     --tool hermes \
     --tool python \
-    --wake-url http://<remote-client-lan-ip>:9876/wake \
-    --wake-token '<shared-random-token>'
+    --wake-url http://<CLIENT_HOST>:9876/wake \
+    --wake-token '<SHARED_WAKE_TOKEN>'
 ```
 
 Use `--dry-run --print-manifest` first if you want to inspect the exact manifest before registering. The manifest still contains no local skills, memory, sessions, logs, env vars, or secrets except the explicit wake token you choose to send. Public node APIs expose only `transport.type`, never `wake_url` or `wake_token`.
