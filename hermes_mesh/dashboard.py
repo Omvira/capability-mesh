@@ -178,8 +178,20 @@ def _card_html(card: Mapping[str, Any]) -> str:
     )
 
 
+def _board_column_for_assignment_status(status: str) -> str:
+    """Map assignment status to the public board's compatibility column id."""
+
+    if status == "claimed":
+        return "claimed"
+    if status == "completed":
+        return "completed"
+    if status == "failed":
+        return "failed"
+    return "assigned"
+
+
 def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
-    """Return a dashboard-safe Hermes-style Kanban board projection."""
+    """Return a dashboard-safe Capability Mesh Kanban board projection."""
 
     tasks = list_posted_tasks(mesh_home)
     assignments = list_task_assignments(mesh_home)
@@ -255,7 +267,7 @@ def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
 
     for assignment in assignments:
         status = str(assignment.get("status") or "assigned")
-        column_id = "claimed" if status == "claimed" else "completed" if status == "completed" else "failed" if status == "failed" else "assigned"
+        column_id = _board_column_for_assignment_status(status)
         tool_call = assignment.get("tool_call") if isinstance(assignment.get("tool_call"), Mapping) else {}
         by_id[column_id]["cards"].append(
             {
@@ -301,6 +313,55 @@ def public_board(mesh_home: str | Path | None = None) -> dict[str, Any]:
     }
 
 
+def _dashboard_summary(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "node_count": len(nodes),
+        "task_type_count": len({task for node in nodes for task in node.get("task_types", [])}),
+        "tool_count": len({tool for node in nodes for tool in node.get("tools_available", [])}),
+        "auto_accept_count": sum(
+            1 for node in nodes if node.get("policies", {}).get("auto_accept_task_types")
+        ),
+    }
+
+
+def _dashboard_actions() -> list[dict[str, str]]:
+    return [
+        {
+            "label": "Load registered nodes",
+            "href": "/api/nodes/statuses",
+            "description": "Fetch public node status only when the drawer is opened.",
+        },
+        {
+            "label": "View board JSON",
+            "href": "/api/board",
+            "description": "Inspect the privacy-filtered Kanban board projection.",
+        },
+    ]
+
+
+def _dashboard_nodes_drawer() -> dict[str, str]:
+    return {
+        "title": "Registered nodes",
+        "endpoint": "/api/nodes/statuses",
+        "copy": "Node details are lazy-loaded so the dashboard shell stays privacy-light.",
+    }
+
+
+def build_dashboard_ui_projection(mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Return a privacy-safe JSON projection for standalone UI rendering."""
+
+    nodes = public_nodes(mesh_home)
+    return {
+        "title": "Capability Mesh",
+        "issue_label": "Open Design dashboard projection",
+        "privacy_notice": "Privacy-first view: public counts, lazy node status, filtered board data.",
+        "summary": _dashboard_summary(nodes),
+        "actions": _dashboard_actions(),
+        "nodes_drawer": _dashboard_nodes_drawer(),
+        "kanban": public_board(mesh_home),
+    }
+
+
 def _render_kanban_board(board: Mapping[str, Any]) -> str:
     rendered_columns = []
     for column in board.get("columns", []):
@@ -310,7 +371,14 @@ def _render_kanban_board(board: Mapping[str, Any]) -> str:
         description = column.get("description")
         legacy_title = column.get("legacy_title")
         legacy_html = f'<span class="sr-only">{html.escape(str(legacy_title))}</span>' if legacy_title else ""
-        description_html = f'<p class="kanban-column__hint">{html.escape(str(description))}{legacy_html}</p>' if description else legacy_html
+        if description:
+            description_html = (
+                '<p class="kanban-column__hint">'
+                f'{html.escape(str(description))}{legacy_html}'
+                '</p>'
+            )
+        else:
+            description_html = legacy_html
         rendered_columns.append(
             f'<section class="kanban-column kanban-column--{html.escape(status)}" data-status="{html.escape(status)}">'
             '<div class="kanban-column__header">'
@@ -410,7 +478,7 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
     content = "".join(cards) or (
         '<section class="empty-state">'
         '<p class="eyebrow">No nodes registered</p>'
-        '<h2>Waiting for Hermes instances to join.</h2>'
+        '<h2>Waiting for Capability Mesh nodes to join.</h2>'
         '<p>Use the one-shot registration script or POST a capability manifest to <code>/api/nodes</code>. Private memories, skills, sessions, logs, env vars, and secrets remain local.</p>'
         '</section>'
     )
@@ -419,7 +487,7 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Mesh</title>
+  <title>Capability Mesh</title>
   <style>
     :root {{
       color-scheme: light;
@@ -630,8 +698,8 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
             <span>Privacy First</span>
           </div>
           <p class="eyebrow">Privacy-first capability network</p>
-          <h1>Hermes Mesh</h1>
-          <p class="subtitle">Registered Hermes nodes expose task-completion capability, not private local state. Skills, memory, sessions, logs, env vars, transport commands, and secrets stay off the mesh.</p>
+          <h1>Capability Mesh</h1>
+          <p class="subtitle">Registered Capability Mesh nodes expose task-completion capability, not private local state. Skills, memory, sessions, logs, env vars, transport commands, and secrets stay off the mesh.</p>
           <div class="hero-actions">
             <a class="button primary" href="/api/nodes">View node JSON</a>
             <a class="button" href="/health">Health check</a>
@@ -649,12 +717,12 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
       <span>●</span>
       <div><strong>Public view is deliberately narrow.</strong> This page summarizes routing metadata only; private memories, local skills, session traces, raw logs, environment variables, secrets, and transport commands are never rendered here.</div>
     </section>
-    <section class="mesh-kanban" aria-label="HermesMesh task board">
+    <section class="mesh-kanban" aria-label="Capability Mesh task board">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Hermes plugin Kanban</p>
+          <p class="eyebrow">Capability Mesh Kanban</p>
           <h2>KANBAN</h2>
-          <p>Mirror the Hermes Kanban lifecycle: triage, todo, ready, running, blocked, and done. Cards stay privacy-filtered while surfacing task ids, node lanes, assignment status, handoff summaries, and result counts.</p>
+          <p>Mirror the Capability Mesh task lifecycle: triage, todo, ready, running, blocked, and done. Cards stay privacy-filtered while surfacing task ids, node lanes, assignment status, handoff summaries, and result counts.</p>
         </div>
         <a class="button" href="/api/board">View board JSON</a>
       </div>
@@ -688,7 +756,7 @@ def render_dashboard(nodes: list[dict[str, Any]], board: Mapping[str, Any] | Non
         const chips = (items) => (items || []).map((item) => `<span class="mini-chip">${{esc(item)}}</span>`).join('') || '<span class="muted">none</span>';
         const renderRows = (nodes) => {{
           if (!nodes.length) {{
-            list.innerHTML = '<section class="empty-state"><p class="eyebrow">No nodes registered</p><h2>Waiting for Hermes instances to join.</h2></section>';
+            list.innerHTML = '<section class="empty-state"><p class="eyebrow">No nodes registered</p><h2>Waiting for Capability Mesh nodes to join.</h2></section>';
             return;
           }}
           list.innerHTML = nodes.map((node) => {{
@@ -748,6 +816,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(public_node_statuses(self.mesh_home))
             elif path == "/api/board":
                 self._send_json(public_board(self.mesh_home))
+            elif path == "/api/ui/dashboard":
+                self._send_json(build_dashboard_ui_projection(self.mesh_home))
             elif path.startswith("/api/nodes/"):
                 suffix = path.removeprefix("/api/nodes/")
                 if suffix.endswith("/assignments"):
@@ -934,15 +1004,15 @@ def make_server(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path
 def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path | None = None) -> None:
     server = make_server(host=host, port=port, mesh_home=mesh_home)
     try:
-        print(f"HermesMesh dashboard listening on http://{host}:{server.server_port}")
+        print(f"Capability Mesh dashboard listening on http://{host}:{server.server_port}")
         server.serve_forever()
     finally:
         server.server_close()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the read-only HermesMesh dashboard.")
-    parser.add_argument("--mesh-home", default=None, help="Mesh registry home; defaults to $HERMES_MESH_HOME or ~/.hermes-mesh")
+    parser = argparse.ArgumentParser(description="Run the read-only Capability Mesh dashboard.")
+    parser.add_argument("--mesh-home", default=None, help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, legacy $HERMES_MESH_HOME, or ~/.capability-mesh")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)

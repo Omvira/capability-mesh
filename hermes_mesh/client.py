@@ -1,4 +1,4 @@
-"""HTTP client helpers for HermesMesh services."""
+"""HTTP client helpers for Capability Mesh services."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from hermes_mesh.core import (
 
 
 class HermesMeshClientError(RuntimeError):
-    """Raised when a HermesMesh service request fails."""
+    """Raised when a Capability Mesh service request fails."""
 
 
 def _json_request(
@@ -54,7 +54,7 @@ def _json_request(
 
 
 class HermesMeshClient:
-    """Small stdlib HTTP client for the standalone HermesMesh service."""
+    """Small stdlib HTTP client for the standalone Capability Mesh service."""
 
     def __init__(self, base_url: str, *, timeout: float = 10.0):
         self.base_url = base_url
@@ -288,3 +288,7 @@ class HermesMeshClient:
         self.claim_assignment(assignment_id, str(node["node_id"]))
         result = build_dispatch_result(node, validate_task_contract(task))
         return self.complete_assignment(assignment_id, str(node["node_id"]), result)
+
+
+CapabilityMeshClientError = HermesMeshClientError
+CapabilityMeshClient = HermesMeshClient

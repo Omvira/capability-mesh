@@ -1,13 +1,13 @@
 ---
-title: HermesMesh Independent Service
+title: Capability Mesh Independent Service
 sidebar_position: 95
 ---
 
-# HermesMesh Independent Service
+# Capability Mesh Independent Service
 
-HermesMesh is a privacy-first capability access network for task-capable nodes.
+Capability Mesh is a privacy-first capability access network for task-capable nodes.
 Each node can register what it can do and can post tasks that need to be done.
-The HermesMesh service plans parent tasks and invokes allowlisted server-local tools and nodes as callable capability tools according to declared capabilities.
+The Capability Mesh service plans parent tasks and invokes allowlisted server-local tools and nodes as callable capability tools according to declared capabilities.
 
 The first principle is:
 
@@ -15,13 +15,13 @@ The first principle is:
 
 ## Architecture
 
-- `hermes_mesh.core`: schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, privacy-safe node heartbeat/status records, result filtering, verification primitives, and contribution records.
-- `hermes_mesh.dashboard`: standalone stdlib Server. It runs the HermesMesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry; it is not a Hermes Agent plugin.
-- `hermes_mesh.client`: independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A-like message sending against a running Server.
-- `hermes_mesh.cli`: standalone CLI for local registry operations, starting the Server, starting Client commands/loops, and launching the guided trial Client installer.
+- `capability_mesh.core`: public namespace for schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, privacy-safe node heartbeat/status records, result filtering, verification primitives, and contribution records.
+- `capability_mesh.dashboard`: public namespace for the standalone stdlib Server. It runs the Capability Mesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry; it is not a Hermes Agent plugin.
+- `capability_mesh.client`: public namespace for the independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A-like message sending against a running Server.
+- `capability_mesh.cli`: public namespace for the standalone CLI for local registry operations, starting the Server, starting Client commands/loops, and launching the guided trial Client installer.
 - `scripts/install_client.py`: stdlib-only guided installer for a first Client. It prompts for safe public metadata, registers with a Server, writes a local manifest, and optionally keeps the Client online with heartbeat.
 
-Hermes Agent is only one possible node runtime/adapter. HermesMesh must not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
+Hermes Agent is only one possible legacy node runtime/adapter. Capability Mesh must not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills. The `hermes_mesh` package and `hermes-mesh` command remain legacy compatibility aliases for existing users.
 
 ## What Alpha includes
 
@@ -52,7 +52,7 @@ Hermes Agent is only one possible node runtime/adapter. HermesMesh must not impo
 Generate and register a privacy-first node manifest:
 
 ```bash
-python -m hermes_mesh.cli manifest \
+python -m capability_mesh.cli manifest \
   --node-id local-node-1 \
   --display-name "Local Hermes" \
   --task-type code_review \
@@ -60,14 +60,14 @@ python -m hermes_mesh.cli manifest \
   --tool terminal \
   --tool file \
   --output capability-manifest.yaml
-python -m hermes_mesh.cli --mesh-home /tmp/mesh register capability-manifest.yaml
+python -m capability_mesh.cli --mesh-home /tmp/mesh register capability-manifest.yaml
 ```
 
 Post and route a task locally:
 
 ```bash
-python -m hermes_mesh.cli --mesh-home /tmp/mesh post-task task-contract.yaml
-python -m hermes_mesh.cli --mesh-home /tmp/mesh route-task task-contract.yaml --json
+python -m capability_mesh.cli --mesh-home /tmp/mesh post-task task-contract.yaml
+python -m capability_mesh.cli --mesh-home /tmp/mesh route-task task-contract.yaml --json
 ```
 
 The HTTP service also exposes `POST /api/tasks/plan` for compatibility with node-only planning and `POST /api/tasks/plan-step` for mixed server/node orchestration. `plan-step` returns an action such as `invoke_server_tool`, `invoke_node`, `orchestration_action`, `completed`, or `no_match`.
@@ -75,8 +75,8 @@ The HTTP service also exposes `POST /api/tasks/plan` for compatibility with node
 Filter and record a result:
 
 ```bash
-python -m hermes_mesh.cli filter-result result.yaml --contract task-contract.yaml
-python -m hermes_mesh.cli --mesh-home /tmp/mesh record-result result.yaml
+python -m capability_mesh.cli filter-result result.yaml --contract task-contract.yaml
+python -m capability_mesh.cli --mesh-home /tmp/mesh record-result result.yaml
 ```
 
 ## Service and client
@@ -84,33 +84,33 @@ python -m hermes_mesh.cli --mesh-home /tmp/mesh record-result result.yaml
 Run the standalone service:
 
 ```bash
-python -m hermes_mesh.cli --mesh-home /tmp/mesh server --host 127.0.0.1 --port 8765
+python -m capability_mesh.cli --mesh-home /tmp/mesh server --host 127.0.0.1 --port 8765
 ```
 
 For trusted LAN/VPN access only:
 
 ```bash
-python -m hermes_mesh.cli --mesh-home /tmp/mesh server --host 0.0.0.0 --port 8765
+python -m capability_mesh.cli --mesh-home /tmp/mesh server --host 0.0.0.0 --port 8765
 ```
 
 Client CLI:
 
 ```bash
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 health
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 agent-card
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 nodes
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 register capability-manifest.yaml
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 post-task task-contract.yaml
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 route-task task-contract.yaml --required-tool terminal
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 install --yes --node-id local-node-1 --task-type test_running --tool terminal --allow-auto-accept --keep-online
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat local-node-1
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 heartbeat-loop local-node-1 --interval 30
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 loop capability-manifest.yaml --interval 30 --run-next
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "hello mesh"
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "image" --image screenshot.png --mime-type image/png
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 poll local-node-1
-python -m hermes_mesh.cli client --url http://127.0.0.1:8765 run-next capability-manifest.yaml
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 health
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 agent-card
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 nodes
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 register capability-manifest.yaml
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 post-task task-contract.yaml
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 route-task task-contract.yaml --required-tool terminal
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 install
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 install --yes --node-id local-node-1 --task-type test_running --tool terminal --allow-auto-accept --keep-online
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 heartbeat local-node-1
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 heartbeat-loop local-node-1 --interval 30
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 loop capability-manifest.yaml --interval 30 --run-next
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "hello mesh"
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 send-a2a --text "image" --image screenshot.png --mime-type image/png
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 poll local-node-1
+python -m capability_mesh.cli client --url http://127.0.0.1:8765 run-next capability-manifest.yaml
 ```
 
 HTTP endpoints:
@@ -133,7 +133,7 @@ HTTP endpoints:
 
 ## Orchestration Decisions
 
-HermesMesh is the planner/controller. For one parent task, the service may invoke 0..n server-local tools and 0..n nodes. A server-local invocation is an allowlisted deterministic tool call whose result is filtered and recorded locally. A node invocation is a single assigned subtask or partial operation selected by task type, required tools, and capability metadata. A node does not own the whole parent task unless the assigned subtask actually completes it.
+Capability Mesh is the planner/controller. For one parent task, the service may invoke 0..n server-local tools and 0..n nodes. A server-local invocation is an allowlisted deterministic tool call whose result is filtered and recorded locally. A node invocation is a single assigned subtask or partial operation selected by task type, required tools, and capability metadata. A node does not own the whole parent task unless the assigned subtask actually completes it.
 
 Mixed plan steps use explicit kinds: `server_tool_call`, `node_tool_call`, and `orchestration_tool_call`. A planning response maps those to `invoke_server_tool`, `invoke_node`, `orchestration_action`, `completed`, or `no_match`. Server-local builders reject private node transport/dispatch fields and reject non-allowlisted server tools. Nodes never directly call Server tools and never receive Server private tool definitions, node private transport commands, or dispatch commands in assignments.
 
@@ -143,7 +143,7 @@ Node heartbeat/status persistence is intentionally narrow. `POST /api/nodes/{nod
 
 ## A2A Shape
 
-HermesMesh follows Google's A2A protocol shape as closely as practical with stdlib-only JSON APIs. The Server publishes an Agent Card at `/.well-known/agent-card.json`. Clients send envelopes to `POST /api/a2a/messages` with `role` (`user` or `agent`) and `parts`. Supported part shapes are text parts, file parts, and data parts. File parts can carry image content as base64 `bytes` or a `uri` plus `mimeType`. The Server responds with a task envelope containing `id`, `contextId`, `status`, `history`, and `artifacts`.
+Capability Mesh follows Google's A2A protocol shape as closely as practical with stdlib-only JSON APIs. The Server publishes an Agent Card at `/.well-known/agent-card.json`. Clients send envelopes to `POST /api/a2a/messages` with `role` (`user` or `agent`) and `parts`. Supported part shapes are text parts, file parts, and data parts. File parts can carry image content as base64 `bytes` or a `uri` plus `mimeType`. The Server responds with a task envelope containing `id`, `contextId`, `status`, `history`, and `artifacts`.
 
 This A2A surface is intentionally a content-transfer/API shape, not a private state channel. Agent Cards and public node views do not expose local skills, memory, sessions, logs, environment variables, secrets, wake URLs, tokens, transport commands, or dispatch commands.
 

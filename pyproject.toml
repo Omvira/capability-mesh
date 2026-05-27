@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-mesh"
+name = "capability-mesh"
 version = "0.1.0"
 description = "Independent privacy-first capability mesh core"
 readme = "README.md"
@@ -17,10 +17,12 @@ dev = ["pytest>=8.0"]
 mcp = ["mcp>=1.0"]
 
 [project.scripts]
+capability-mesh = "capability_mesh.cli:main"
 hermes-mesh = "hermes_mesh.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["hermes_mesh", "hermes_mesh.*"]
+include = ["capability_mesh", "capability_mesh.*", "hermes_mesh", "hermes_mesh.*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]

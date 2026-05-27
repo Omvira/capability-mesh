@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""One-shot HermesMesh node registration without cloning the repo.
+"""One-shot Capability Mesh node registration without cloning the repo.
 
-This script intentionally uses only the Python standard library so a Hermes node can
-register with a running HermesMesh service via:
+This script intentionally uses only the Python standard library so a node can
+register with a running Capability Mesh service via:
 
-  curl -fsSL https://raw.githubusercontent.com/Omvira/HermesMesh/main/scripts/register_node.py | \
+  curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/register_node.py | \
     python3 - --mesh-url http://10.0.16.11:8765 --node-id my-node --task-type code_review --tool hermes
 
 It submits only a privacy-first capability manifest. It does not read or upload
@@ -51,14 +51,14 @@ DEFAULT_PRIVACY = {
 
 
 def _default_node_id() -> str:
-    host = socket.gethostname() or "hermes-node"
+    host = socket.gethostname() or "capability-node"
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
     raw = f"{user}-{host}".lower()
-    return "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in raw).strip("-._") or "hermes-node"
+    return "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in raw).strip("-._") or "capability-node"
 
 
 def _default_display_name(node_id: str) -> str:
-    return f"Hermes node {node_id}"
+    return f"Capability Mesh node {node_id}"
 
 
 def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
@@ -127,14 +127,14 @@ def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any
             return json.loads(data) if data else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"HermesMesh registration failed: HTTP {exc.code}: {detail}") from exc
+        raise SystemExit(f"Capability Mesh registration failed: HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
-        raise SystemExit(f"HermesMesh registration failed: {exc}") from exc
+        raise SystemExit(f"Capability Mesh registration failed: {exc}") from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Register this Hermes node with a HermesMesh service without cloning HermesMesh.")
-    parser.add_argument("--mesh-url", required=True, help="HermesMesh service URL, e.g. http://10.0.16.11:8765")
+    parser = argparse.ArgumentParser(description="Register this node with a Capability Mesh service without cloning Capability Mesh.")
+    parser.add_argument("--mesh-url", required=True, help="Capability Mesh service URL, e.g. http://10.0.16.11:8765")
     parser.add_argument("--node-id", default=_default_node_id(), help="Unique node id; defaults to user-host")
     parser.add_argument("--display-name", default=None, help="Human-readable display name")
     parser.add_argument("--task-type", action="append", required=True, help="Task type this node can handle; repeatable")
@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dispatch-command", action="append", help="Optional dispatch command argv part; repeatable")
     parser.add_argument("--timeout-seconds", type=int, default=120, help="Transport timeout metadata, 1..300")
     parser.add_argument("--wake-url", help="Webhook URL this node exposes for notification-only assignment wake-up")
-    parser.add_argument("--wake-token", help="Optional shared wake token sent as X-HermesMesh-Wake-Token; use only over trusted networks/HTTPS")
+    parser.add_argument("--wake-token", help="Optional shared wake token sent as X-CapabilityMesh-Wake-Token; use only over trusted networks/HTTPS. X-HermesMesh-Wake-Token is legacy compatibility.")
     parser.add_argument("--wake-timeout-seconds", type=int, default=15, help="Wake webhook timeout metadata, 1..60")
     parser.add_argument("--allow-auto-accept", action="store_true", help="Mark node as not requiring human approval")
     parser.add_argument("--auto-accept-task-type", action="append", help="Task type this node auto-accepts; repeatable")
@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
     result = _post_json(args.mesh_url, manifest, args.http_timeout)
-    print("Registered HermesMesh node:")
+    print("Registered Capability Mesh node:")
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

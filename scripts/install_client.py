@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Interactive HermesMesh client registration and keep-online CLI.
+"""Interactive Capability Mesh client registration and keep-online CLI.
 
 Stdlib-only on purpose so a trial client can be installed with a one-shot
 curl/python command. The CLI builds a privacy-first public capability manifest,
-registers it with a HermesMesh Server, writes a local manifest copy, and can keep
+registers it with a Capability Mesh Server, writes a local manifest copy, and can keep
 the Client online by sending heartbeat/presence updates.
 
 It never reads or uploads local skills, memory, sessions, raw logs, environment
@@ -49,14 +49,15 @@ DEFAULT_PRIVACY = {
 
 
 def _default_node_id() -> str:
-    host = socket.gethostname() or "hermes-client"
+    host = socket.gethostname() or "capability-client"
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
     raw = f"{user}-{host}".lower()
-    return "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in raw).strip("-._") or "hermes-client"
+    return "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in raw).strip("-._") or "capability-client"
 
 
 def _default_config_dir() -> Path:
-    return Path(os.environ.get("HERMES_MESH_CLIENT_HOME", Path.home() / ".hermes-mesh" / "client")).expanduser()
+    configured = os.environ.get("CAPABILITY_MESH_CLIENT_HOME") or os.environ.get("HERMES_MESH_CLIENT_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".capability-mesh" / "client"
 
 
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
@@ -94,11 +95,11 @@ def _prompt_bool(prompt: str, default: bool) -> bool:
 def _load_or_prompt_args(args: argparse.Namespace) -> argparse.Namespace:
     if args.yes:
         return args
-    print("HermesMesh Client setup")
+    print("Capability Mesh Client setup")
     print("This publishes only safe capability metadata. Do not enter secrets, tokens, private skill names, memory, or log paths.")
-    args.mesh_url = _prompt("HermesMesh Server URL", args.mesh_url or "http://127.0.0.1:8765", required=True)
+    args.mesh_url = _prompt("Capability Mesh Server URL", args.mesh_url or "http://127.0.0.1:8765", required=True)
     args.node_id = _prompt("Client node id", args.node_id or _default_node_id(), required=True)
-    args.display_name = _prompt("Display name", args.display_name or f"HermesMesh Client {args.node_id}")
+    args.display_name = _prompt("Display name", args.display_name or f"Capability Mesh Client {args.node_id}")
     args.task_type = _split_csv(_prompt("Task types, comma-separated", ",".join(args.task_type or ["smoke"])), ["smoke"])
     args.tool = _split_csv(_prompt("Public tool/capability labels, comma-separated", ",".join(args.tool or ["hermes"])), ["hermes"])
     dispatch_default = " ".join(args.dispatch_command or ["hermes", "chat", "-q"])
@@ -126,8 +127,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "node_id": args.node_id,
-        "display_name": args.display_name or f"HermesMesh Client {args.node_id}",
-        "description": "Trial HermesMesh Client registered by install_client.py",
+        "display_name": args.display_name or f"Capability Mesh Client {args.node_id}",
+        "description": "Trial Capability Mesh Client registered by install_client.py",
         "capabilities": {"task_types": task_types, "tools_available": tools, "resources": resources},
         "policies": {
             "accepts_tasks": not args.no_accept_tasks,
@@ -199,7 +200,7 @@ def write_systemd_service(args: argparse.Namespace, manifest_path: Path) -> Path
     service_dir = Path.home() / ".config" / "systemd" / "user"
     service_dir.mkdir(parents=True, exist_ok=True)
     node_id = args.node_id
-    service_name = f"hermes-mesh-client-{node_id}.service"
+    service_name = f"capability-mesh-client-{node_id}.service"
     service_path = service_dir / service_name
     exec_args = [
         sys.executable,
@@ -220,7 +221,7 @@ def write_systemd_service(args: argparse.Namespace, manifest_path: Path) -> Path
     content = "\n".join(
         [
             "[Unit]",
-            "Description=HermesMesh trial client keep-online loop",
+            "Description=Capability Mesh trial client keep-online loop",
             "After=network-online.target",
             "Wants=network-online.target",
             "",
@@ -258,8 +259,8 @@ def heartbeat_loop(mesh_url: str, node_id: str, interval: float, timeout: float)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Register and start a trial HermesMesh Client.")
-    parser.add_argument("--mesh-url", help="HermesMesh Server URL, e.g. http://10.0.16.11:8765")
+    parser = argparse.ArgumentParser(description="Register and start a trial Capability Mesh Client.")
+    parser.add_argument("--mesh-url", help="Capability Mesh Server URL, e.g. http://10.0.16.11:8765")
     parser.add_argument("--node-id", default=_default_node_id(), help="Unique client node id")
     parser.add_argument("--display-name", help="Human-readable client name")
     parser.add_argument("--task-type", action="append", help="Task type this Client can handle; repeatable")

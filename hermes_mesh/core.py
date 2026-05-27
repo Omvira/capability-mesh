@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -85,6 +86,11 @@ _SAFE_SSH_HOST = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z0-9_.-]+$")
 DEFAULT_TRANSPORT_COMMAND = [sys.executable, "-c", "print('capability-mesh')"]
 DEFAULT_TRANSPORT_TIMEOUT = 10
+CAPABILITY_MESH_HOME_ENV = "CAPABILITY_MESH_HOME"
+HERMES_MESH_HOME_ENV = "HERMES_MESH_HOME"
+DEFAULT_CAPABILITY_MESH_HOME = ".capability-mesh"
+CAPABILITY_MESH_WAKE_TOKEN_HEADER = "X-CapabilityMesh-Wake-Token"
+HERMES_MESH_WAKE_TOKEN_HEADER = "X-HermesMesh-Wake-Token"
 
 
 class CapabilityMeshValidationError(ValueError):
@@ -307,17 +313,24 @@ def validate_transport_metadata(transport: Mapping[str, Any]) -> dict[str, Any]:
 def default_mesh_home() -> Path:
     """Return the standalone mesh home directory.
 
-    The core package is intentionally independent from Hermes.  Standalone users
-    can set HERMES_MESH_HOME; otherwise mesh state lives under ~/.hermes-mesh.
-    Hermes-specific adapters may pass an explicit mesh_home to registry helpers.
+    Standalone users can set CAPABILITY_MESH_HOME. HERMES_MESH_HOME is supported
+    as a legacy fallback; otherwise mesh state lives under ~/.capability-mesh.
+    Adapters may pass an explicit mesh_home to registry helpers.
     """
 
-    import os
-
-    configured = os.environ.get("HERMES_MESH_HOME")
+    configured = os.environ.get(CAPABILITY_MESH_HOME_ENV) or os.environ.get(HERMES_MESH_HOME_ENV)
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".hermes-mesh"
+    return Path.home() / DEFAULT_CAPABILITY_MESH_HOME
+
+
+def wake_token_from_headers(headers: Mapping[str, Any]) -> str | None:
+    """Return the preferred wake token header, accepting the legacy name."""
+
+    token = headers.get(CAPABILITY_MESH_WAKE_TOKEN_HEADER)
+    if token is None:
+        token = headers.get(HERMES_MESH_WAKE_TOKEN_HEADER)
+    return None if token is None else str(token)
 
 
 def capability_mesh_nodes_dir(mesh_home: str | Path | None = None) -> Path:
@@ -530,8 +543,8 @@ def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
 
     url = str(server_url or "").rstrip("/")
     return {
-        "name": "HermesMesh Server",
-        "description": "Privacy-first HermesMesh HTTP service for task-capable clients.",
+        "name": "Capability Mesh Server",
+        "description": "Privacy-first Capability Mesh HTTP service for task-capable clients.",
         "url": url,
         "version": "0.1.0",
         "protocolVersion": "1.0",
@@ -549,8 +562,8 @@ def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
         ],
         "skills": [
             {
-                "id": "hermesmesh-message-transfer",
-                "name": "HermesMesh A2A Message Transfer",
+                "id": "capability-mesh-message-transfer",
+                "name": "Capability Mesh A2A Message Transfer",
                 "description": "Accepts A2A-like message envelopes with TextPart, FilePart, and DataPart content.",
                 "tags": ["a2a", "message", "task", "privacy-first"],
                 "inputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
@@ -667,7 +680,7 @@ def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
             "artifacts": [
                 {
                     "artifactId": f"{task_id}-artifact-1",
-                    "name": "HermesMesh response",
+                    "name": "Capability Mesh response",
                     "parts": artifact_parts,
                 }
             ],
@@ -833,7 +846,7 @@ def wake_assignment(
     }
     wake_token = transport.get("wake_token")
     if wake_token:
-        headers["X-HermesMesh-Wake-Token"] = str(wake_token)
+        headers[CAPABILITY_MESH_WAKE_TOKEN_HEADER] = str(wake_token)
     req = request.Request(wake_url, data=body, headers=headers, method="POST")
     timeout = float(transport.get("wake_timeout_seconds", DEFAULT_TRANSPORT_TIMEOUT))
     try:

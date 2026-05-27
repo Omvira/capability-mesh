@@ -1,7 +1,8 @@
 """Standalone CLI for the independent Capability Mesh core.
 
-Run with ``python -m hermes_mesh.cli``.  The registry defaults to
-``$HERMES_MESH_HOME`` or ``~/.hermes-mesh`` and has no Hermes dependency.
+Run with ``python -m capability_mesh.cli``.  The registry defaults to
+``$CAPABILITY_MESH_HOME`` or ``~/.capability-mesh``. Legacy ``python -m
+hermes_mesh.cli`` and ``$HERMES_MESH_HOME`` continue to work.
 """
 
 from __future__ import annotations
@@ -72,13 +73,13 @@ def _mesh_home(args: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m hermes_mesh.cli",
+        prog="python -m capability_mesh.cli",
         description="Standalone privacy-first Capability Mesh helpers.",
     )
     parser.add_argument(
         "--mesh-home",
         default=None,
-        help="Mesh registry home; defaults to $HERMES_MESH_HOME or ~/.hermes-mesh",
+        help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, legacy $HERMES_MESH_HOME, or ~/.capability-mesh",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -128,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     contributions.add_argument("--json", action="store_true")
     contributions.set_defaults(func=cmd_contributions)
 
-    server = sub.add_parser("server", help="Run the HermesMesh HTTP service and dashboard")
+    server = sub.add_parser("server", help="Run the Capability Mesh HTTP service and dashboard")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
     server.set_defaults(func=cmd_server)
@@ -138,13 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.set_defaults(func=cmd_server)
 
-    mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a HermesMesh service")
-    mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="HermesMesh service base URL")
+    mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a Capability Mesh service")
+    mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
     mcp_server.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds")
     mcp_server.set_defaults(func=cmd_mcp_server)
 
-    client = sub.add_parser("client", help="Call a running HermesMesh service")
-    client.add_argument("--url", required=True, help="HermesMesh service base URL")
+    client = sub.add_parser("client", help="Call a running Capability Mesh service")
+    client.add_argument("--url", required=True, help="Capability Mesh service base URL")
     client_sub = client.add_subparsers(dest="client_command")
     client_health = client_sub.add_parser("health", help="Check service health")
     client_health.set_defaults(func=cmd_client_health)

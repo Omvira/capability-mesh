@@ -1,4 +1,4 @@
-"""Tests for HermesMesh HTTP service and client helpers."""
+"""Tests for Capability Mesh HTTP service and client helpers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -164,7 +165,7 @@ def test_dashboard_api_gets_single_node(dashboard_url):
 def test_dashboard_html_hides_registered_nodes_until_nodes_stat_clicked(dashboard_url):
     html = _get_text(f"{dashboard_url}/")
 
-    assert "Hermes Mesh" in html
+    assert "Capability Mesh" in html
     assert 'id="nodesStat"' in html
     assert 'id="nodesDrawer"' in html
     assert 'aria-label="Registered Hermes nodes"' not in html
@@ -311,6 +312,80 @@ def test_dashboard_board_api_returns_kanban_shape_without_private_transport(dash
     assert "raw_private_logs" not in body
 
 
+def test_dashboard_ui_api_returns_privacy_safe_rendering_projection(dashboard_url):
+    projection = _get_json(f"{dashboard_url}/api/ui/dashboard")
+
+    assert projection["title"] == "Capability Mesh"
+    assert projection["issue_label"]
+    assert "privacy" in projection["privacy_notice"].lower()
+    assert projection["summary"] == {
+        "node_count": 1,
+        "task_type_count": 2,
+        "tool_count": 2,
+        "auto_accept_count": 1,
+    }
+    assert projection["actions"] == [
+        {
+            "label": "Load registered nodes",
+            "href": "/api/nodes/statuses",
+            "description": "Fetch public node status only when the drawer is opened.",
+        },
+        {
+            "label": "View board JSON",
+            "href": "/api/board",
+            "description": "Inspect the privacy-filtered Kanban board projection.",
+        },
+    ]
+    assert projection["nodes_drawer"] == {
+        "title": "Registered nodes",
+        "endpoint": "/api/nodes/statuses",
+        "copy": "Node details are lazy-loaded so the dashboard shell stays privacy-light.",
+    }
+
+    body = json.dumps(projection)
+    assert "Dashboard Node" not in body
+    assert "dash-node" not in body
+    assert "code_review" not in body
+    assert "SECRET_TRANSPORT_COMMAND" not in body
+    assert "/usr/bin/private-runner" not in body
+    assert "dispatch_command" not in body
+    assert "wake_url" not in body
+    assert "token" not in body.lower()
+    assert "environment_variables" not in body
+    assert "raw_private_logs" not in body
+    assert "private_memory" not in body
+    assert "reasoning_trace" not in body
+    assert "local_skills" not in body
+
+
+def test_dashboard_ui_api_reuses_public_board_projection(dashboard_url):
+    _post_json(f"{dashboard_url}/api/tasks", _task("task-ui-board"))
+    _post_json(f"{dashboard_url}/api/tasks/route", {"task": _task("task-ui-board"), "required_tools": ["pytest"]})
+
+    projection = _get_json(f"{dashboard_url}/api/ui/dashboard")
+    board = _get_json(f"{dashboard_url}/api/board")
+
+    assert projection["kanban"] == board
+    assert [column["id"] for column in projection["kanban"]["columns"]] == [
+        "posted",
+        "assigned",
+        "claimed",
+        "completed",
+        "failed",
+        "results",
+    ]
+    for column in projection["kanban"]["columns"]:
+        assert set(column) >= {
+            "id",
+            "title",
+            "legacy_title",
+            "kanban_status",
+            "description",
+            "count",
+            "cards",
+        }
+
+
 def test_dashboard_returns_404_for_unknown_node(dashboard_url):
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         _get_json(f"{dashboard_url}/api/nodes/missing-node")
@@ -382,14 +457,14 @@ def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
 
     card = HermesMeshClient(dashboard_url).agent_card()
 
-    assert card["name"] == "HermesMesh Server"
+    assert card["name"] == "Capability Mesh Server"
     assert card["url"] == dashboard_url
     assert card["protocolVersion"] == "1.0"
     assert card["protocolVersions"] == ["1.0"]
     assert card["preferredTransport"] == "HTTP+JSON"
     assert card["capabilities"]["streaming"] is False
     assert card["additionalInterfaces"][0]["url"] == f"{dashboard_url}/message:send"
-    assert card["skills"][0]["id"] == "hermesmesh-message-transfer"
+    assert card["skills"][0]["id"] == "capability-mesh-message-transfer"
     body = json.dumps(card)
     assert "SECRET_TRANSPORT_COMMAND" not in body
     assert "dispatch_command" not in body
@@ -731,7 +806,7 @@ def test_server_can_wake_webhook_node_without_exposing_private_transport(tmp_pat
                 }
             ]
             lower_headers = {key.lower(): value for key, value in headers_seen[0].items()}
-            assert lower_headers["x-hermesmesh-wake-token"] == "SECRET_WAKE_TOKEN"
+            assert lower_headers["x-capabilitymesh-wake-token"] == "SECRET_WAKE_TOKEN"
             body = json.dumps(woken) + json.dumps(_get_json(f"{url}/api/nodes")) + json.dumps(public_node_view(manifest))
             assert "SECRET_WAKE_TOKEN" not in body
             assert wake_url not in body
@@ -971,3 +1046,20 @@ def test_install_client_script_dry_run_manifest_is_privacy_safe(capsys):
     assert "environment_variables" in rendered
     assert "private_memory" in rendered
     assert "SECRET" not in rendered
+
+
+def test_install_client_config_dir_prefers_capability_env(monkeypatch, tmp_path):
+    from scripts import install_client
+
+    new_home = tmp_path / "new-client-home"
+    legacy_home = tmp_path / "legacy-client-home"
+
+    monkeypatch.delenv("CAPABILITY_MESH_CLIENT_HOME", raising=False)
+    monkeypatch.delenv("HERMES_MESH_CLIENT_HOME", raising=False)
+    assert install_client._default_config_dir() == Path.home() / ".capability-mesh" / "client"
+
+    monkeypatch.setenv("HERMES_MESH_CLIENT_HOME", str(legacy_home))
+    assert install_client._default_config_dir() == legacy_home
+
+    monkeypatch.setenv("CAPABILITY_MESH_CLIENT_HOME", str(new_home))
+    assert install_client._default_config_dir() == new_home

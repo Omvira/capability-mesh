@@ -1,4 +1,4 @@
-"""MCP stdio adapter for a running HermesMesh HTTP service."""
+"""MCP stdio adapter for a running Capability Mesh HTTP service."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def sanitize_for_mcp(value: Any) -> Any:
 
 
 class HermesMeshMCPTools:
-    """Thin, testable tool implementations over the HermesMesh HTTP client."""
+    """Thin, testable tool implementations over the Capability Mesh HTTP client."""
 
     def __init__(self, mesh_url: str, *, timeout: float = 10.0):
         self.client = HermesMeshClient(mesh_url, timeout=timeout)
@@ -108,13 +108,13 @@ def _missing_sdk_error() -> str:
 def _register_fastmcp_tools(server: Any, tools: HermesMeshMCPTools) -> None:
     @server.tool()
     def list_clients() -> list[dict[str, Any]]:
-        """List public HermesMesh clients/nodes."""
+        """List public Capability Mesh clients/nodes."""
 
         return tools.list_clients()
 
     @server.tool()
     def get_client(client_id: str) -> dict[str, Any]:
-        """Get public details for one HermesMesh client/node."""
+        """Get public details for one Capability Mesh client/node."""
 
         return tools.get_client(client_id)
 
@@ -138,7 +138,7 @@ def _register_fastmcp_tools(server: Any, tools: HermesMeshMCPTools) -> None:
 
     @server.tool()
     def send_a2a_message(message: dict[str, Any]) -> dict[str, Any]:
-        """Send an A2A-like message envelope through HermesMesh."""
+        """Send an A2A-like message envelope through Capability Mesh."""
 
         return tools.send_a2a_message(message)
 
@@ -152,15 +152,15 @@ def run_mcp_server(mesh_url: str, *, timeout: float = 10.0) -> int:
         print(_missing_sdk_error(), file=sys.stderr)
         return 1
 
-    server = FastMCP("HermesMesh")
+    server = FastMCP("Capability Mesh")
     _register_fastmcp_tools(server, HermesMeshMCPTools(mesh_url, timeout=timeout))
     server.run(transport="stdio")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a HermesMesh stdio MCP server adapter.")
-    parser.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="HermesMesh service base URL")
+    parser = argparse.ArgumentParser(description="Run a Capability Mesh stdio MCP server adapter.")
+    parser.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds")
     return parser
 

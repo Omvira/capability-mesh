@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,7 @@ def run_mesh_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Co
     return subprocess.run(
         [sys.executable, "-m", "hermes_mesh.cli", *args],
         cwd=ROOT,
-        env=env,
+        env={**os.environ, **env} if env is not None else None,
         text=True,
         capture_output=True,
         timeout=30,
@@ -52,6 +53,55 @@ assert manifest['privacy']['expose_memory'] is False
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_capability_mesh_namespace_reexports_public_api():
+    import capability_mesh
+    from capability_mesh.client import CapabilityMeshClient, CapabilityMeshClientError, HermesMeshClient
+    from capability_mesh.core import build_default_capability_manifest
+
+    manifest = capability_mesh.build_default_capability_manifest(
+        node_id="capability-namespace-node",
+        display_name="Capability Namespace Node",
+        task_types=["test_running"],
+        tools_available=["python"],
+    )
+
+    assert manifest == build_default_capability_manifest(
+        node_id="capability-namespace-node",
+        display_name="Capability Namespace Node",
+        task_types=["test_running"],
+        tools_available=["python"],
+    )
+    assert CapabilityMeshClient is HermesMeshClient
+    assert issubclass(CapabilityMeshClientError, RuntimeError)
+
+
+def test_default_mesh_home_prefers_capability_env_with_legacy_fallback(monkeypatch, tmp_path):
+    from capability_mesh.core import default_mesh_home
+
+    new_home = tmp_path / "new-home"
+    legacy_home = tmp_path / "legacy-home"
+
+    monkeypatch.delenv("CAPABILITY_MESH_HOME", raising=False)
+    monkeypatch.delenv("HERMES_MESH_HOME", raising=False)
+    assert default_mesh_home() == Path.home() / ".capability-mesh"
+
+    monkeypatch.setenv("HERMES_MESH_HOME", str(legacy_home))
+    assert default_mesh_home() == legacy_home
+
+    monkeypatch.setenv("CAPABILITY_MESH_HOME", str(new_home))
+    assert default_mesh_home() == new_home
+
+
+def test_wake_token_header_accepts_new_name_with_legacy_fallback():
+    from capability_mesh.core import wake_token_from_headers
+
+    assert wake_token_from_headers({"X-CapabilityMesh-Wake-Token": "new"}) == "new"
+    assert wake_token_from_headers({"X-HermesMesh-Wake-Token": "legacy"}) == "legacy"
+    assert wake_token_from_headers(
+        {"X-CapabilityMesh-Wake-Token": "new", "X-HermesMesh-Wake-Token": "legacy"}
+    ) == "new"
 
 
 def test_core_registry_uses_explicit_mesh_home(tmp_path):
