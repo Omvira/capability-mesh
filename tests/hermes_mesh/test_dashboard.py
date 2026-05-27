@@ -763,6 +763,126 @@ def test_client_and_cli_can_request_assignment_wake(dashboard_url):
     assert args.client_command == "wake"
 
 
+def test_cli_parses_mcp_server_url_aliases(dashboard_url):
+    from hermes_mesh.cli import build_parser
+
+    by_url = build_parser().parse_args(["mcp-server", "--url", dashboard_url, "--timeout", "3"])
+    by_mesh_url = build_parser().parse_args(["mcp-server", "--mesh-url", dashboard_url])
+
+    assert by_url.command == "mcp-server"
+    assert by_url.mesh_url == dashboard_url
+    assert by_url.timeout == 3
+    assert by_mesh_url.mesh_url == dashboard_url
+
+
+def test_mcp_sanitization_removes_private_transport_fields():
+    from hermes_mesh.mcp_server import sanitize_for_mcp
+
+    sanitized = sanitize_for_mcp(
+        {
+            "node_id": "safe-node",
+            "environment_variables": {"HOME": "/private"},
+            "private_memory": "do not expose",
+            "session_history": ["private chat"],
+            "apiKey": "SECRET_API_KEY",
+            "password": "SECRET_PASSWORD",
+            "secrets": {"value": "SECRET_VALUE"},
+            "raw_private_logs": "SECRET_LOGS",
+            "transport": {
+                "type": "webhook",
+                "command": ["private-runner"],
+                "wake_url": "http://example.invalid/private",
+                "wake_token": "SECRET_WAKE_TOKEN",
+                "nestedToken": "SECRET_NESTED_TOKEN",
+            },
+            "assignment": {
+                "assignment_id": "assignment-1",
+                "dispatch_command": ["private-dispatch"],
+                "tool_call": {"name": "public_tool"},
+            },
+            "items": ({"transport_command": ["private"]},),
+        }
+    )
+
+    body = json.dumps(sanitized)
+    assert sanitized["node_id"] == "safe-node"
+    assert sanitized["transport"] == {"type": "webhook"}
+    assert sanitized["assignment"] == {"assignment_id": "assignment-1", "tool_call": {"name": "public_tool"}}
+    assert sanitized["items"] == [{}]
+    assert "SECRET" not in body
+    assert "environment_variables" not in body
+    assert "private_memory" not in body
+    assert "session_history" not in body
+    assert "apiKey" not in body
+    assert "password" not in body
+    assert "secrets" not in body
+    assert "raw_private_logs" not in body
+    assert "wake_url" not in body
+    assert "command" not in body
+
+
+def test_mcp_server_registers_expected_tools_and_runs_stdio(monkeypatch):
+    import types
+
+    from hermes_mesh import mcp_server
+
+    registered: dict[str, object] = {}
+    run_calls: list[str] = []
+
+    class FakeFastMCP:
+        def __init__(self, name: str):
+            self.name = name
+
+        def tool(self):
+            def decorator(func):
+                registered[func.__name__] = func
+                return func
+
+            return decorator
+
+        def run(self, *, transport: str):
+            run_calls.append(transport)
+
+    monkeypatch.setitem(sys.modules, "mcp", types.ModuleType("mcp"))
+    monkeypatch.setitem(sys.modules, "mcp.server", types.ModuleType("mcp.server"))
+    fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+    setattr(fastmcp_module, "FastMCP", FakeFastMCP)
+    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+
+    rc = mcp_server.run_mcp_server("http://example.invalid", timeout=2)
+
+    assert rc == 0
+    assert run_calls == ["stdio"]
+    assert set(registered) == {
+        "list_clients",
+        "get_client",
+        "call_client_async",
+        "create_assignment",
+        "get_assignment_status",
+        "send_a2a_message",
+    }
+
+
+def test_mcp_server_reports_clear_error_when_sdk_missing(monkeypatch, capsys):
+    import builtins
+
+    from hermes_mesh.mcp_server import run_mcp_server
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "mcp" or name.startswith("mcp."):
+            raise ImportError("no mcp sdk")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    rc = run_mcp_server("http://example.invalid")
+
+    assert rc == 1
+    assert "Python MCP SDK is required" in capsys.readouterr().err
+
+
 def test_client_cli_parses_heartbeat_commands(dashboard_url):
     from hermes_mesh.cli import build_parser
 

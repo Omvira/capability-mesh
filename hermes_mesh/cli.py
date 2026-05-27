@@ -37,6 +37,7 @@ from hermes_mesh.core import (
 )
 from hermes_mesh.client import HermesMeshClient, HermesMeshClientError
 from hermes_mesh.dashboard import serve_dashboard
+from hermes_mesh.mcp_server import run_mcp_server
 
 
 def _load_yaml_or_json(path: str | Path) -> dict[str, Any]:
@@ -136,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.set_defaults(func=cmd_server)
+
+    mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a HermesMesh service")
+    mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="HermesMesh service base URL")
+    mcp_server.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds")
+    mcp_server.set_defaults(func=cmd_mcp_server)
 
     client = sub.add_parser("client", help="Call a running HermesMesh service")
     client.add_argument("--url", required=True, help="HermesMesh service base URL")
@@ -349,6 +355,10 @@ def cmd_contributions(args: argparse.Namespace) -> int:
 def cmd_server(args: argparse.Namespace) -> int:
     serve_dashboard(host=args.host, port=args.port, mesh_home=_mesh_home(args))
     return 0
+
+
+def cmd_mcp_server(args: argparse.Namespace) -> int:
+    return run_mcp_server(args.mesh_url, timeout=args.timeout)
 
 
 def _client(args: argparse.Namespace) -> HermesMeshClient:

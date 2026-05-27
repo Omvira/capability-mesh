@@ -295,6 +295,56 @@ HermesMesh Client onboarding 默认不上传：
 - 安全的 resource 标签
 - heartbeat 派生的在线状态
 
+### 10. 通过 MCP stdio 连接 Hermes
+
+HermesMesh 可以作为 MCP stdio server 暴露给支持 MCP 的 Hermes/客户端。这个适配器只调用已有 HermesMesh HTTP API，并只返回 JSON-serializable 的安全字段；不会暴露 `wake_token`、`wake_url`、`dispatch_command`、transport command、私有日志、memory、session、环境变量或 secrets。
+
+先确保 Python MCP SDK 已安装：
+
+```bash
+python3 -m pip install '.[mcp]'
+# 或者只安装 SDK：
+python3 -m pip install mcp
+```
+
+本地测试启动：
+
+```bash
+python3 -m hermes_mesh.cli mcp-server \
+  --mesh-url http://<SERVER_HOST>:<SERVER_PORT>
+```
+
+如果没有安装 MCP SDK，命令会明确报错并退出，不会静默失败。
+
+Hermes 配置示例，仅使用占位符，不要写真实本机路径、真实局域网 IP、token 或 secret：
+
+```json
+{
+  "mcp_servers": {
+    "hermesmesh": {
+      "command": "<PYTHON_EXECUTABLE>",
+      "args": [
+        "-m",
+        "hermes_mesh.cli",
+        "mcp-server",
+        "--mesh-url",
+        "http://<SERVER_HOST>:<SERVER_PORT>"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+可用 MCP tools：
+
+- `list_clients`：列出公开 Client/Node。
+- `get_client`：查看单个公开 Client/Node。
+- `call_client_async`：通过任务 contract 创建异步 assignment。
+- `create_assignment`：`call_client_async` 的别名，语义更直接。
+- `get_assignment_status`：查看 assignment 当前状态。
+- `send_a2a_message`：发送 A2A-like message envelope。
+
 
 ## Install for development
 

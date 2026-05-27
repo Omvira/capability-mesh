@@ -215,6 +215,12 @@ class HermesMeshClient:
             raise HermesMeshClientError("node assignments endpoint returned a non-list")
         return [dict(item) for item in data]
 
+    def list_assignments(self) -> list[dict[str, Any]]:
+        data = _json_request(self.base_url, "/api/assignments", timeout=self.timeout)
+        if not isinstance(data, list):
+            raise HermesMeshClientError("assignments endpoint returned a non-list")
+        return [dict(item) for item in data]
+
     def claim_assignment(self, assignment_id: str, node_id: str) -> dict[str, Any]:
         data = _json_request(
             self.base_url,
