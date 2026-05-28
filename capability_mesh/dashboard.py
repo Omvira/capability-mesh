@@ -1,8 +1,8 @@
-"""Compatibility wrapper for Capability Mesh dashboard helpers."""
+"""Compatibility module for Capability Mesh dashboard helpers."""
 
-from hermes_mesh.dashboard import *  # noqa: F401,F403
+from capability_mesh.server.app import main, serve_dashboard
+from capability_mesh.server.api import DashboardHandler, make_server
+from capability_mesh.ui.dashboard import *  # noqa: F401,F403
 
 if __name__ == "__main__":  # pragma: no cover
-    from hermes_mesh.dashboard import main
-
     raise SystemExit(main())
