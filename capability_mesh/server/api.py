@@ -1,4 +1,4 @@
-"""Read-only stdlib dashboard for registered Capability Mesh nodes."""
+"""HTTP API handler for the Capability Mesh Server."""
 
 from __future__ import annotations
 
@@ -37,13 +37,14 @@ from capability_mesh.core import (
     validate_task_contract,
     wake_assignment,
 )
-from capability_mesh.ui.dashboard import (
+from capability_mesh.server.public_projection import (
     build_dashboard_ui_projection,
     public_board,
     public_node_statuses,
     public_node_view,
     public_nodes,
-    render_dashboard,
+    read_static_asset,
+    render_ui_shell,
 )
 
 
@@ -86,7 +87,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/a2a/tasks":
                 self._send_json(list_a2a_tasks(self.mesh_home))
             elif path == "/":
-                self._send_html(render_dashboard(public_nodes(self.mesh_home), public_board(self.mesh_home)))
+                self._send_html(render_ui_shell(self.mesh_home))
+            elif path.startswith("/static/"):
+                self._send_static(path.removeprefix("/static/"))
             else:
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         except CapabilityMeshValidationError as exc:
@@ -237,6 +240,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = text.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_static(self, name: str) -> None:
+        try:
+            body, content_type = read_static_asset(name)
+        except FileNotFoundError:
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

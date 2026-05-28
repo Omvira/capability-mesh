@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capability Mesh</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="hero__content">
+        <div class="masthead">
+          <div class="issue-meta" aria-label="Dashboard issue metadata">
+            <span>Issue 01</span>
+            <span>Local Mesh Catalog</span>
+            <span>Privacy First</span>
+          </div>
+          <p class="eyebrow" id="issueLabel">Open Design dashboard projection</p>
+          <h1 id="dashboardTitle">Capability Mesh</h1>
+          <p class="subtitle">Registered Capability Mesh nodes expose task-completion capability, not private local state. Skills, memory, sessions, logs, env vars, commands, and secrets stay off the mesh.</p>
+          <div class="hero-actions" id="actions"></div>
+        </div>
+        <div class="stats" aria-label="Mesh summary">
+          <button class="stat" type="button" id="nodesStat" aria-haspopup="dialog" aria-controls="nodesDrawer"><strong id="nodeCount">0</strong><span>nodes</span><small>Open node list</small></button>
+          <div class="stat"><strong id="taskTypeCount">0</strong><span>task types</span></div>
+          <div class="stat"><strong id="toolCount">0</strong><span>tools</span></div>
+          <div class="stat"><strong id="autoAcceptCount">0</strong><span>auto-ready</span></div>
+        </div>
+      </div>
+    </section>
+    <section class="notice" aria-label="Privacy notice">
+      <span aria-hidden="true">*</span>
+      <div><strong>Public view is deliberately narrow.</strong> <span id="privacyNotice">Loading /api/ui/dashboard...</span></div>
+    </section>
+    <section class="mesh-kanban" aria-label="Capability Mesh task board">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Capability Mesh Kanban</p>
+          <h2>KANBAN</h2>
+          <p>Mirror the Capability Mesh task lifecycle. Cards stay privacy-filtered while surfacing task ids, node lanes, assignment status, handoff summaries, and result counts.</p>
+        </div>
+        <a class="button" href="/api/board">View board JSON</a>
+      </div>
+      <div class="kanban-board" id="kanbanBoard"></div>
+    </section>
+    <div class="nodes-drawer" id="nodesDrawer" role="dialog" aria-modal="true" aria-labelledby="nodesDrawerTitle" hidden>
+      <button class="nodes-drawer__shade" type="button" data-close-nodes aria-label="Close registered nodes list"></button>
+      <aside class="nodes-drawer__panel">
+        <div class="nodes-drawer__top">
+          <div>
+            <p class="eyebrow">Registered nodes</p>
+            <h2 id="nodesDrawerTitle">Nodes</h2>
+            <p class="subtitle" id="nodesDrawerCopy" data-endpoint="/api/nodes/statuses">Names, declared capabilities, and current online status only.</p>
+          </div>
+          <button class="nodes-close" type="button" data-close-nodes aria-label="Close">x</button>
+        </div>
+        <p class="nodes-loading" id="nodesLoading">Loading node status...</p>
+        <p class="nodes-error" id="nodesError" hidden></p>
+        <div class="nodes-list" id="nodesList"></div>
+      </aside>
+    </div>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
