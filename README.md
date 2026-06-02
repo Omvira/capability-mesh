@@ -400,7 +400,10 @@ GET  /tasks
 GET  /tasks/{task_id}
 POST /tasks/{task_id}:cancel
 POST /message:send
-POST /message:stream  # returns 501 unless streaming is enabled
+POST /message:stream
+POST /a2a/jsonrpc
+GET  /tasks/{task_id}/push-notification-configs
+POST /tasks/{task_id}/push-notification-configs
 POST /api/a2a/messages
 POST /api/a2a/tasks/send
 GET  /api/a2a/tasks
@@ -421,6 +424,8 @@ POST /api/assignments/{assignment_id}/complete
 GET  /api/results
 POST /api/results
 ```
+
+Hub 的 A2A AgentCard 会声明 `streaming=true` 和 `pushNotifications=true`。`POST /message:stream` 使用 SSE 返回官方 `StreamResponse` 事件；`/tasks/{task_id}/push-notification-configs` 持久化并返回官方 `TaskPushNotificationConfig`；`POST /a2a/jsonrpc` 支持 `message/send`、`tasks/get`、`tasks/list`、`tasks/cancel`。所有 A2A 响应都会通过官方 `a2a-sdk` protobuf model 校验。
 
 ---
 

@@ -33,7 +33,7 @@ Capability Mesh must not read or expose local memory, sessions, raw logs, reason
 - Assignment polling/claiming/completion records, privacy-safe node heartbeat/status records, and privacy-filtered result records.
 - A Server/Client split where Client liveness is reported through heartbeat/presence and Server liveness is detected by Client health polling.
 - A guided trial Client installer for first-run onboarding: generate a safe manifest, register, save local config, send initial heartbeat, optionally install a user systemd keep-online service or run a foreground heartbeat loop.
-- A2A Protocol 1.0 JSON APIs validated with the official `a2a-sdk`: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, and response artifacts.
+- A2A Protocol 1.0 JSON APIs validated with the official `a2a-sdk`: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, response artifacts, SSE `StreamResponse` events, push notification configs, and JSON-RPC core operation binding.
 - Contribution records that remain local-private unless explicit human consent is supplied for team/public visibility.
 - A standalone HTTP service and a bundled HTTP client.
 

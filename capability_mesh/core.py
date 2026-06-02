@@ -22,7 +22,16 @@ from urllib import error, request
 
 import yaml
 
-from capability_mesh.a2a_compat import HTTP_JSON_BINDING_URI, PROTOCOL_VERSION, validate_agent_card_dict, validate_send_message_response_dict
+from capability_mesh.a2a_compat import (
+    HTTP_JSON_BINDING_URI,
+    PROTOCOL_VERSION,
+    validate_agent_card_dict,
+    validate_list_task_push_notification_configs_response_dict,
+    validate_list_tasks_response_dict,
+    validate_send_message_response_dict,
+    validate_stream_response_dict,
+    validate_task_push_notification_config_dict,
+)
 
 SCHEMA_VERSION = "capability-mesh-alpha-1"
 
@@ -552,8 +561,8 @@ def build_hub_agent_card(*, hub_url: str | None = None) -> dict[str, Any]:
             }
         ],
         "capabilities": {
-            "streaming": False,
-            "pushNotifications": False,
+            "streaming": True,
+            "pushNotifications": True,
             "extendedAgentCard": False,
         },
         "defaultInputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
@@ -716,6 +725,125 @@ def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
     return validate_send_message_response_dict(response)
 
 
+def build_a2a_stream_responses(message: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Build SDK-validated StreamResponse events for Send Streaming Message."""
+
+    envelope = build_a2a_task(message)
+    task = dict(_require_mapping(envelope.get("task"), "send_message_response.task"))
+    task_id = str(task["id"])
+    context_id = str(task.get("contextId", task_id))
+    status = dict(_require_mapping(task.get("status", {}), "task.status"))
+    artifact = dict(_require_mapping(task["artifacts"][0], "task.artifacts[0]"))
+    events = [
+        {"task": task},
+        {
+            "statusUpdate": {
+                "taskId": task_id,
+                "contextId": context_id,
+                "status": status,
+            }
+        },
+        {
+            "artifactUpdate": {
+                "taskId": task_id,
+                "contextId": context_id,
+                "artifact": artifact,
+                "append": False,
+                "lastChunk": True,
+            }
+        },
+    ]
+    return [validate_stream_response_dict(event) for event in events]
+
+
+def build_task_push_notification_config(task_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+    """Build an SDK-validated TaskPushNotificationConfig for a task."""
+
+    _safe_record_id(task_id, "task_id")
+    data = dict(_require_mapping(config, "push_notification_config"))
+    _require_non_empty_string(data.get("url"), "push_notification_config.url")
+    url = str(data["url"])
+    config_id = str(data.get("id") or "default")
+    _safe_record_id(config_id, "push_notification_config.id")
+    result: dict[str, Any] = {"taskId": task_id, "id": config_id, "url": url}
+    if data.get("tenant") is not None:
+        result["tenant"] = str(data["tenant"])
+    if data.get("token") is not None:
+        result["token"] = str(data["token"])
+    if isinstance(data.get("authentication"), Mapping):
+        result["authentication"] = copy.deepcopy(data["authentication"])
+    return validate_task_push_notification_config_dict(result)
+
+
+def record_task_push_notification_config(task_id: str, config: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
+    built = build_task_push_notification_config(task_id, config)
+    get_a2a_task(task_id, mesh_home=mesh_home)
+    return _write_registry_record("a2a-push-configs", f"{task_id}-{built['id']}", built, mesh_home)
+
+
+def list_task_push_notification_configs(task_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    _safe_record_id(task_id, "task_id")
+    configs = [
+        config
+        for config in _list_registry_records("a2a-push-configs", lambda record: validate_task_push_notification_config_dict(record), mesh_home)
+        if config.get("taskId") == task_id
+    ]
+    return validate_list_task_push_notification_configs_response_dict({"configs": configs})
+
+
+def get_task_push_notification_config(task_id: str, config_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    _safe_record_id(task_id, "task_id")
+    _safe_record_id(config_id, "push_notification_config.id")
+    path = _mesh_registry_dir("a2a-push-configs", mesh_home) / f"{task_id}-{config_id}.yaml"
+    if not path.exists():
+        raise CapabilityMeshValidationError(f"unknown A2A push notification config id: {config_id}")
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return validate_task_push_notification_config_dict(dict(_require_mapping(data, "push_notification_config")))
+
+
+def build_jsonrpc_success(request_id: Any, result: Mapping[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": dict(result)}
+
+
+def build_jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def handle_a2a_jsonrpc(request_body: Mapping[str, Any], mesh_home: str | Path | None = None) -> dict[str, Any]:
+    """Handle a minimal production JSON-RPC binding for A2A core operations."""
+
+    body = dict(_require_mapping(request_body, "jsonrpc_request"))
+    request_id = body.get("id")
+    if body.get("jsonrpc") != "2.0":
+        return build_jsonrpc_error(request_id, -32600, "invalid JSON-RPC version")
+    method = body.get("method")
+    if not isinstance(method, str) or not method:
+        return build_jsonrpc_error(request_id, -32600, "method is required")
+    params = body.get("params", {})
+    if not isinstance(params, Mapping):
+        return build_jsonrpc_error(request_id, -32602, "params must be an object")
+    try:
+        if method in {"message/send", "message:send"}:
+            message = params.get("message", params)
+            response = build_a2a_task(_require_mapping(message, "params.message"))
+            record_a2a_task(response, mesh_home=mesh_home)
+            return build_jsonrpc_success(request_id, response)
+        if method in {"tasks/get", "tasks.get"}:
+            _require_non_empty_string(params.get("id"), "params.id")
+            task_id = str(params["id"])
+            return build_jsonrpc_success(request_id, get_a2a_task(task_id, mesh_home=mesh_home))
+        if method in {"tasks/list", "tasks.list"}:
+            return build_jsonrpc_success(request_id, build_a2a_list_tasks_response(mesh_home))
+        if method in {"tasks/cancel", "tasks.cancel"}:
+            _require_non_empty_string(params.get("id"), "params.id")
+            task_id = str(params["id"])
+            return build_jsonrpc_success(request_id, cancel_a2a_task(task_id, mesh_home=mesh_home))
+    except CapabilityMeshValidationError as exc:
+        return build_jsonrpc_error(request_id, -32602, str(exc))
+    return build_jsonrpc_error(request_id, -32601, f"unsupported A2A JSON-RPC method: {method}")
+
+
 def record_a2a_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
     task_data = dict(_require_mapping(task, "a2a_task"))
     if "task" in task_data:
@@ -735,7 +863,7 @@ def list_a2a_tasks(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
 
 def build_a2a_list_tasks_response(mesh_home: str | Path | None = None) -> dict[str, Any]:
     tasks = list_a2a_tasks(mesh_home)
-    return {"tasks": tasks, "pageSize": len(tasks), "totalSize": len(tasks)}
+    return validate_list_tasks_response_dict({"tasks": tasks, "pageSize": len(tasks), "totalSize": len(tasks)})
 
 
 def get_a2a_task(task_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:

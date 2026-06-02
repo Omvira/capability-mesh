@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlsplit
 from capability_mesh.core import (
     CapabilityMeshValidationError,
     build_a2a_list_tasks_response,
+    build_a2a_stream_responses,
     build_a2a_task,
     build_agent_card,
     build_task_assignment,
@@ -23,17 +24,20 @@ from capability_mesh.core import (
     execute_plan_step,
     get_a2a_task,
     get_registered_node,
+    handle_a2a_jsonrpc,
     list_node_assignments,
     list_a2a_tasks,
     list_posted_tasks,
     list_registered_nodes,
     list_task_assignments,
     list_task_results,
+    list_task_push_notification_configs,
     plan_next_node_call,
     post_task,
     record_node_heartbeat,
     record_a2a_task,
     record_task_assignment,
+    record_task_push_notification_config,
     record_task_result,
     register_node_manifest,
     route_task,
@@ -91,6 +95,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(list_a2a_tasks(self.mesh_home))
             elif path == "/tasks":
                 self._send_json(build_a2a_list_tasks_response(self.mesh_home), content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/tasks/") and path.endswith("/push-notification-configs"):
+                suffix = path.removeprefix("/tasks/").removesuffix("/push-notification-configs")
+                task_id = unquote(suffix.rstrip("/"))
+                self._send_json(list_task_push_notification_configs(task_id, mesh_home=self.mesh_home), content_type="application/a2a+json; charset=utf-8")
             elif path.startswith("/tasks/"):
                 task_id = unquote(path.removeprefix("/tasks/"))
                 self._send_json(get_a2a_task(task_id, mesh_home=self.mesh_home), content_type="application/a2a+json; charset=utf-8")
@@ -110,6 +118,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/nodes":
                 saved = register_node_manifest(data, mesh_home=self.mesh_home)
                 self._send_json({"ok": True, "path": str(saved), "node_id": data.get("node_id")})
+            elif path == "/a2a/jsonrpc":
+                self._send_json(handle_a2a_jsonrpc(data, mesh_home=self.mesh_home), content_type="application/json; charset=utf-8")
             elif path in {"/message:send", "/api/a2a/messages", "/api/a2a/tasks/send"}:
                 message = data.get("message", data)
                 task = build_a2a_task(message)
@@ -119,8 +129,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 task_id = unquote(path.removeprefix("/tasks/").removesuffix(":cancel"))
                 task = cancel_a2a_task(task_id, mesh_home=self.mesh_home)
                 self._send_json(task, content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/tasks/") and path.endswith("/push-notification-configs"):
+                suffix = path.removeprefix("/tasks/").removesuffix("/push-notification-configs")
+                task_id = unquote(suffix.rstrip("/"))
+                record_task_push_notification_config(task_id, data, mesh_home=self.mesh_home)
+                config = list_task_push_notification_configs(task_id, mesh_home=self.mesh_home)["configs"][-1]
+                self._send_json(config, content_type="application/a2a+json; charset=utf-8")
             elif path == "/message:stream":
-                self._send_json({"error": "streaming is not supported by this AgentCard"}, status=HTTPStatus.NOT_IMPLEMENTED)
+                message = data.get("message", data)
+                events = build_a2a_stream_responses(message)
+                self._send_sse(events)
             elif path.startswith("/api/nodes/") and path.endswith("/heartbeat"):
                 node_id = unquote(path.removeprefix("/api/nodes/").removesuffix("/heartbeat"))
                 status = data.get("status", "online")
@@ -245,16 +263,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK, *, content_type: str = "application/json; charset=utf-8") -> None:
         body = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self.send_response(status)
+        self._send_common_headers(content_type, len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_common_headers(self, content_type: str, content_length: int) -> None:
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+
+    def _send_sse(self, events: list[dict[str, Any]]) -> None:
+        payload = "".join(f"event: message\ndata: {json.dumps(event, ensure_ascii=False, sort_keys=True)}\n\n" for event in events)
+        body = payload.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self._send_common_headers("text/event-stream; charset=utf-8", len(body))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
     def _send_html(self, text: str) -> None:
         body = text.encode("utf-8")
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        self._send_common_headers("text/html; charset=utf-8", len(body))
         self.end_headers()
         self.wfile.write(body)
 
@@ -265,8 +297,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self._send_common_headers(content_type, len(body))
         self.end_headers()
         self.wfile.write(body)
 

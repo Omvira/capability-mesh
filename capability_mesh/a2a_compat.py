@@ -41,3 +41,24 @@ def validate_list_tasks_response_dict(response: Mapping[str, Any]) -> dict[str, 
 
     ParseDict(dict(response), a2a_types.ListTasksResponse())
     return dict(response)
+
+
+def validate_stream_response_dict(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a StreamResponse dict against the official a2a-sdk protobuf model."""
+
+    ParseDict(dict(response), a2a_types.StreamResponse())
+    return dict(response)
+
+
+def validate_task_push_notification_config_dict(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a TaskPushNotificationConfig dict against the official a2a-sdk model."""
+
+    ParseDict(dict(config), a2a_types.TaskPushNotificationConfig())
+    return dict(config)
+
+
+def validate_list_task_push_notification_configs_response_dict(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a ListTaskPushNotificationConfigsResponse dict against the official a2a-sdk model."""
+
+    ParseDict(dict(response), a2a_types.ListTaskPushNotificationConfigsResponse())
+    return dict(response)
