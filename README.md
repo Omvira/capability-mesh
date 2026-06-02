@@ -1,11 +1,11 @@
 # Capability Mesh
 
-Capability Mesh is an independent, privacy-first capability mesh core extracted from Hermes Agent.
+Capability Mesh is an independent, privacy-first capability mesh core.
 
 It provides schema validation, local node registry helpers, dispatch prompt construction,
 result filtering, verification primitives, mixed server/node task orchestration, a standalone CLI, an HTTP service, and a small HTTP client for capability-network experiments.
 
-Hermes Agent is only one possible adapter/node runtime. The mesh core does not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
+The mesh core must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
 
 
 
@@ -100,7 +100,7 @@ python3 -m capability_mesh.cli client \
   --display-name "Remote Client" \
   --task-type code_review \
   --task-type test_running \
-  --tool hermes \
+  --tool python \
   --tool python \
   --allow-auto-accept \
   --keep-online \
@@ -116,7 +116,7 @@ python3 -m capability_mesh.cli client \
   --yes \
   --node-id <CLIENT_NODE_ID> \
   --task-type code_review \
-  --tool hermes \
+  --tool python \
   --once
 ```
 
@@ -130,7 +130,7 @@ curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/
     --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
     --node-id <CLIENT_NODE_ID> \
     --task-type code_review \
-    --tool hermes \
+    --tool python \
     --keep-online
 ```
 
@@ -141,7 +141,7 @@ python3 scripts/install_client.py \
   --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
   --node-id <CLIENT_NODE_ID> \
   --task-type code_review \
-  --tool hermes \
+  --tool python \
   --keep-online
 ```
 
@@ -154,7 +154,7 @@ python3 scripts/install_client.py \
   --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
   --node-id <CLIENT_NODE_ID> \
   --task-type code_review \
-  --tool hermes \
+  --tool python \
   --install-systemd
 ```
 
@@ -297,7 +297,7 @@ Capability Mesh Client onboarding 默认不上传：
 
 ### 10. 通过 MCP stdio 连接客户端
 
-Capability Mesh 可以作为 MCP stdio server 暴露给支持 MCP 的客户端，包括 legacy Hermes adapter。这个适配器只调用已有 Capability Mesh HTTP API，并只返回 JSON-serializable 的安全字段；不会暴露 `wake_token`、`wake_url`、`dispatch_command`、transport command、私有日志、memory、session、环境变量或 secrets。
+Capability Mesh 可以作为 MCP stdio server 暴露给支持 MCP 的客户端，包括 external adapter。这个适配器只调用已有 Capability Mesh HTTP API，并只返回 JSON-serializable 的安全字段；不会暴露 `wake_token`、`wake_url`、`dispatch_command`、transport command、私有日志、memory、session、环境变量或 secrets。
 
 先确保 Python MCP SDK 已安装：
 
@@ -410,7 +410,7 @@ Public node status is derived from `last_seen_at` only: recently seen nodes are 
 
 The Server/Client split is explicit: `server` runs the Capability Mesh HTTP service and registry; `client` commands can run independently on another machine and communicate only through JSON APIs. The client detects Server liveness with `GET /health`. The Server detects Client liveness from `POST /api/nodes/{node_id}/heartbeat`, assignment poll/claim/complete activity, and derived public presence.
 
-Capability Mesh also exposes a stdlib-only A2A-shaped JSON surface. `GET /.well-known/agent-card.json` returns a privacy-safe Agent Card. `POST /message:send` accepts a message envelope with `role` and `parts`; supported parts are TextPart (`{"text":"..."}`), FilePart (`{"raw":"<base64>","filename":"screenshot.png","mediaType":"image/png"}` or `{"file":{"uri":"...","mimeType":"image/png"}}` for compatibility), and DataPart (`{"data":{...},"mediaType":"application/json"}`). Compatibility endpoints `POST /api/a2a/messages` and `POST /api/a2a/tasks/send` remain available. Responses use an A2A-style `{ "task": ... }` envelope with `status`, `history`, and `artifacts`. Image transfer is represented as a FilePart with either base64 `raw`/legacy `bytes` or a `uri` plus media type.
+Capability Mesh also exposes a stdlib-only A2A-shaped JSON surface. `GET /.well-known/agent-card.json` returns a privacy-safe Agent Card. `POST /message:send` accepts a message envelope with `role` and `parts`; supported parts are TextPart (`{"text":"..."}`), FilePart (`{"raw":"<base64>","filename":"screenshot.png","mediaType":"image/png"}` or `{"file":{"uri":"...","mimeType":"image/png"}}` for compatibility), and DataPart (`{"data":{...},"mediaType":"application/json"}`). Endpoints `POST /api/a2a/messages` and `POST /api/a2a/tasks/send` remain available. Responses use an A2A-style `{ "task": ... }` envelope with `status`, `history`, and `artifacts`. Image transfer is represented as a FilePart with either base64 `raw`/legacy `bytes` or a `uri` plus media type.
 
 ### Trial Client installer
 
@@ -428,7 +428,7 @@ python3 -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> i
   --node-id remote-client-a \
   --display-name "Remote Client A" \
   --task-type smoke \
-  --tool hermes \
+  --tool python \
   --allow-auto-accept \
   --once
 ```
@@ -437,11 +437,11 @@ Keep the Client online in the foreground:
 
 ```bash
 python3 -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install \
-  --yes --node-id remote-client-a --task-type smoke --tool hermes \
+  --yes --node-id remote-client-a --task-type smoke --tool python \
   --allow-auto-accept --keep-online --interval 30
 ```
 
-The generated manifest is saved under `~/.capability-mesh/client/` by default. `~/.hermes-mesh/client/` remains available only when selected through legacy `HERMES_MESH_CLIENT_HOME`. The installer is stdlib-only and can also be fetched directly when published:
+The generated manifest is saved under `~/.capability-mesh/client/` by default. Override it with `CAPABILITY_MESH_CLIENT_HOME` when needed. The installer is stdlib-only and can also be fetched directly when published:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/install_client.py | \
@@ -460,7 +460,7 @@ python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> re
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> post-task task.yaml
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> route-task task.yaml --required-tool python
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install
-python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install --yes --node-id local-node --task-type smoke --tool hermes --allow-auto-accept --keep-online
+python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> install --yes --node-id local-node --task-type smoke --tool python --allow-auto-accept --keep-online
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> heartbeat local-node
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> heartbeat-loop local-node --interval 30
 python -m capability_mesh.cli client --url http://<SERVER_HOST>:<SERVER_PORT> loop manifest.yaml --interval 30 --run-next
@@ -489,12 +489,11 @@ Registry home resolution:
 
 1. `--mesh-home`
 2. `$CAPABILITY_MESH_HOME`
-3. legacy `$HERMES_MESH_HOME`
-4. `~/.capability-mesh`
+3. `~/.capability-mesh`
 
 ## Register a node without cloning Capability Mesh
 
-A remote client, including a legacy Hermes adapter, can register with a running Capability Mesh service using one stdlib-only Python script fetched over HTTPS. The script submits only a privacy-first capability manifest; it does not read or upload skills, memory, sessions, raw logs, env vars, or secrets.
+A remote client, can register with a running Capability Mesh service using one stdlib-only Python script fetched over HTTPS. The script submits only a privacy-first capability manifest; it does not read or upload skills, memory, sessions, raw logs, env vars, or secrets.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/register_node.py | \
@@ -504,7 +503,7 @@ curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/
     --display-name "Capability Node A" \
     --task-type code_review \
     --task-type python_debugging \
-    --tool hermes \
+    --tool python \
     --tool python \
     --tool git
 ```
@@ -513,7 +512,7 @@ Preview the manifest without registering:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/register_node.py | \
-  python3 - --mesh-url http://<SERVER_HOST>:<SERVER_PORT> --task-type code_review --tool hermes --dry-run
+  python3 - --mesh-url http://<SERVER_HOST>:<SERVER_PORT> --task-type code_review --tool python --dry-run
 ```
 
 After registration, verify from any machine that can reach the service:
@@ -529,7 +528,7 @@ For server-initiated wake-up, the remote client must expose a small HTTP endpoin
 On the remote machine, first run your wake receiver/client adapter, for example on a trusted LAN/VPN address:
 
 ```bash
-# Example only: your adapter should verify X-CapabilityMesh-Wake-Token, accepting X-HermesMesh-Wake-Token only for legacy compatibility, then run poll/claim/complete.
+# Example only: your adapter should verify X-CapabilityMesh-Wake-Token, then run poll/claim/complete.
 python3 wake_client_adapter.py --listen 0.0.0.0 --port 9876 \
   --mesh-url http://<SERVER_HOST>:<SERVER_PORT> \
   --node-id remote-node-a
@@ -544,7 +543,7 @@ curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/
     --node-id remote-node-a \
     --display-name "Remote Node A" \
     --task-type code_review \
-    --tool hermes \
+    --tool python \
     --tool python \
     --wake-url http://<CLIENT_HOST>:9876/wake \
     --wake-token '<SHARED_WAKE_TOKEN>'

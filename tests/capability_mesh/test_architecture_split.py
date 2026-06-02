@@ -67,17 +67,3 @@ def test_server_api_serves_static_ui_and_public_projection_without_ui_backend():
     assert "render_ui_shell" in source
     assert "ui backend" not in source.lower()
     assert "bff" not in source.lower()
-
-
-def test_legacy_hermes_mesh_modules_delegate_to_capability_mesh_architecture():
-    """Legacy names remain, but implementation should live in capability_mesh."""
-
-    legacy_modules = [
-        ROOT / "hermes_mesh" / "client.py",
-        ROOT / "hermes_mesh" / "dashboard.py",
-        ROOT / "hermes_mesh" / "mcp_server.py",
-    ]
-
-    for path in legacy_modules:
-        source = path.read_text(encoding="utf-8")
-        assert "capability_mesh" in source, f"{path.relative_to(ROOT)} should delegate to capability_mesh"

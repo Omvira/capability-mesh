@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def run_mesh_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "hermes_mesh.cli", *args],
+        [sys.executable, "-m", "capability_mesh.cli", *args],
         cwd=ROOT,
         env={**os.environ, **env} if env is not None else None,
         text=True,
@@ -25,17 +25,17 @@ def run_mesh_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Co
     )
 
 
-def test_hermes_mesh_imports_without_hermes_modules():
+def test_capability_mesh_imports_without_private_runtime_modules():
     script = """
 import builtins
 real_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
-    if name == 'hermes_constants' or name.startswith('hermes_cli'):
-        raise AssertionError(f'unexpected Hermes import: {name}')
+    if name == 'agent_constants' or name.startswith('agent_cli'):
+        raise AssertionError(f'unexpected private runtime import: {name}')
     return real_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
-import hermes_mesh
-from hermes_mesh import build_default_capability_manifest
+import capability_mesh
+from capability_mesh import build_default_capability_manifest
 manifest = build_default_capability_manifest(
     node_id='standalone-node',
     display_name='Standalone Node',
@@ -57,7 +57,7 @@ assert manifest['privacy']['expose_memory'] is False
 
 def test_capability_mesh_namespace_reexports_public_api():
     import capability_mesh
-    from capability_mesh.client import CapabilityMeshClient, CapabilityMeshClientError, HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient, CapabilityMeshClientError, CapabilityMeshClient
     from capability_mesh.core import build_default_capability_manifest
 
     manifest = capability_mesh.build_default_capability_manifest(
@@ -73,39 +73,31 @@ def test_capability_mesh_namespace_reexports_public_api():
         task_types=["test_running"],
         tools_available=["python"],
     )
-    assert CapabilityMeshClient is HermesMeshClient
+    assert CapabilityMeshClient.__name__ == "CapabilityMeshClient"
     assert issubclass(CapabilityMeshClientError, RuntimeError)
 
 
-def test_default_mesh_home_prefers_capability_env_with_legacy_fallback(monkeypatch, tmp_path):
+def test_default_mesh_home_prefers_capability_env(monkeypatch, tmp_path):
     from capability_mesh.core import default_mesh_home
 
     new_home = tmp_path / "new-home"
-    legacy_home = tmp_path / "legacy-home"
 
     monkeypatch.delenv("CAPABILITY_MESH_HOME", raising=False)
-    monkeypatch.delenv("HERMES_MESH_HOME", raising=False)
     assert default_mesh_home() == Path.home() / ".capability-mesh"
-
-    monkeypatch.setenv("HERMES_MESH_HOME", str(legacy_home))
-    assert default_mesh_home() == legacy_home
 
     monkeypatch.setenv("CAPABILITY_MESH_HOME", str(new_home))
     assert default_mesh_home() == new_home
 
 
-def test_wake_token_header_accepts_new_name_with_legacy_fallback():
+def test_wake_token_header_accepts_capability_mesh_name():
     from capability_mesh.core import wake_token_from_headers
 
     assert wake_token_from_headers({"X-CapabilityMesh-Wake-Token": "new"}) == "new"
-    assert wake_token_from_headers({"X-HermesMesh-Wake-Token": "legacy"}) == "legacy"
-    assert wake_token_from_headers(
-        {"X-CapabilityMesh-Wake-Token": "new", "X-HermesMesh-Wake-Token": "legacy"}
-    ) == "new"
+    assert wake_token_from_headers({}) is None
 
 
 def test_core_registry_uses_explicit_mesh_home(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, list_registered_nodes, register_node_manifest
+    from capability_mesh import build_default_capability_manifest, list_registered_nodes, register_node_manifest
 
     manifest = build_default_capability_manifest(
         node_id="core-node",
@@ -212,7 +204,7 @@ def task_contract(task_id: str = "task-001") -> dict[str, object]:
 
 
 def test_route_task_matches_tools_and_ranks_by_node_id():
-    from hermes_mesh import build_default_capability_manifest, route_task
+    from capability_mesh import build_default_capability_manifest, route_task
 
     zed = build_default_capability_manifest(
         node_id="zed-node",
@@ -235,7 +227,7 @@ def test_route_task_matches_tools_and_ranks_by_node_id():
 
 
 def test_route_task_rejects_nonmatches():
-    from hermes_mesh import build_default_capability_manifest, route_task
+    from capability_mesh import build_default_capability_manifest, route_task
 
     manifest = build_default_capability_manifest(
         node_id="docs-node",
@@ -252,7 +244,7 @@ def test_route_task_rejects_nonmatches():
 
 
 def test_route_task_auto_accept_status():
-    from hermes_mesh import build_default_capability_manifest, route_task
+    from capability_mesh import build_default_capability_manifest, route_task
 
     manifest = build_default_capability_manifest(
         node_id="auto-node",
@@ -269,7 +261,7 @@ def test_route_task_auto_accept_status():
 
 
 def test_plan_next_node_call_builds_subtask_tool_call_without_requiring_whole_task():
-    from hermes_mesh import build_default_capability_manifest, plan_next_node_call
+    from capability_mesh import build_default_capability_manifest, plan_next_node_call
 
     manifest = build_default_capability_manifest(
         node_id="pytest-node",
@@ -284,8 +276,8 @@ def test_plan_next_node_call_builds_subtask_tool_call_without_requiring_whole_ta
         task_contract("parent-task"),
         [manifest],
         subtask={
-            "objective": "Run only tests/hermes_mesh/test_core_independence.py",
-            "inputs": {"path": "tests/hermes_mesh/test_core_independence.py"},
+            "objective": "Run only tests/capability_mesh/test_core_independence.py",
+            "inputs": {"path": "tests/capability_mesh/test_core_independence.py"},
             "required_tools": ["pytest"],
         },
     )
@@ -294,14 +286,14 @@ def test_plan_next_node_call_builds_subtask_tool_call_without_requiring_whole_ta
     assert plan["tool_call"]["parent_task_id"] == "parent-task"
     assert plan["tool_call"]["tool_call_id"] == "parent-task-pytest-node-call-1"
     assert plan["tool_call"]["node_id"] == "pytest-node"
-    assert plan["tool_call"]["objective"] == "Run only tests/hermes_mesh/test_core_independence.py"
-    assert plan["tool_call"]["inputs"] == {"path": "tests/hermes_mesh/test_core_independence.py"}
+    assert plan["tool_call"]["objective"] == "Run only tests/capability_mesh/test_core_independence.py"
+    assert plan["tool_call"]["inputs"] == {"path": "tests/capability_mesh/test_core_independence.py"}
     assert plan["assignment"]["assignment_id"] == "parent-task-pytest-node-call-1"
     assert plan["assignment"]["tool_call_id"] == "parent-task-pytest-node-call-1"
 
 
 def test_server_tool_step_runs_and_records_filtered_result(tmp_path):
-    from hermes_mesh import execute_plan_step, list_task_results, post_task
+    from capability_mesh import execute_plan_step, list_task_results, post_task
 
     post_task(task_contract("parent-task"), mesh_home=tmp_path)
 
@@ -331,7 +323,7 @@ def test_server_tool_step_runs_and_records_filtered_result(tmp_path):
 
 
 def test_plan_step_node_call_still_polls_as_assignment(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, execute_plan_step, list_node_assignments, post_task
+    from capability_mesh import build_default_capability_manifest, execute_plan_step, list_node_assignments, post_task
 
     manifest = build_default_capability_manifest(
         node_id="pytest-node",
@@ -365,7 +357,7 @@ def test_plan_step_node_call_still_polls_as_assignment(tmp_path):
 
 
 def test_mixed_sequence_preserves_parent_task_and_step_ids(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, execute_plan_step, post_task
+    from capability_mesh import build_default_capability_manifest, execute_plan_step, post_task
 
     manifest = build_default_capability_manifest(
         node_id="node-a",
@@ -400,7 +392,7 @@ def test_mixed_sequence_preserves_parent_task_and_step_ids(tmp_path):
 def test_plan_step_rejects_forbidden_server_tool_and_private_fields():
     import pytest
 
-    from hermes_mesh import CapabilityMeshValidationError, build_server_tool_call
+    from capability_mesh import CapabilityMeshValidationError, build_server_tool_call
 
     with pytest.raises(CapabilityMeshValidationError):
         build_server_tool_call(
@@ -415,7 +407,7 @@ def test_plan_step_rejects_forbidden_server_tool_and_private_fields():
 
 
 def test_dispatch_prompt_limits_node_to_assigned_subtask_and_partial_signals():
-    from hermes_mesh import build_dispatch_prompt, build_node_tool_call
+    from capability_mesh import build_dispatch_prompt, build_node_tool_call
 
     route = {
         "schema_version": "capability-mesh-alpha-1",
@@ -429,7 +421,7 @@ def test_dispatch_prompt_limits_node_to_assigned_subtask_and_partial_signals():
     tool_call = build_node_tool_call(
         task_contract("parent-task"),
         route,
-        subtask={"objective": "Run one focused test file", "inputs": {"path": "tests/hermes_mesh"}},
+        subtask={"objective": "Run one focused test file", "inputs": {"path": "tests/capability_mesh"}},
     )
 
     prompt = build_dispatch_prompt(tool_call)
@@ -444,7 +436,7 @@ def test_dispatch_prompt_limits_node_to_assigned_subtask_and_partial_signals():
 
 
 def test_complete_node_tool_call_aggregates_filtered_partial_result(tmp_path):
-    from hermes_mesh import (
+    from capability_mesh import (
         build_default_capability_manifest,
         list_task_results,
         plan_next_node_call,
@@ -494,7 +486,7 @@ def test_complete_node_tool_call_aggregates_filtered_partial_result(tmp_path):
 
 
 def test_completion_routes_to_next_candidate_when_planned_tool_call_fails(tmp_path):
-    from hermes_mesh import (
+    from capability_mesh import (
         build_default_capability_manifest,
         complete_node_tool_call,
         get_task_assignment,
@@ -546,7 +538,7 @@ def test_completion_routes_to_next_candidate_when_planned_tool_call_fails(tmp_pa
 
 
 def test_record_task_result_filters_private_fields(tmp_path):
-    from hermes_mesh import list_task_results, post_task, record_task_result
+    from capability_mesh import list_task_results, post_task, record_task_result
 
 
     post_task(task_contract(), mesh_home=tmp_path)
@@ -577,7 +569,7 @@ def test_record_task_result_filters_private_fields(tmp_path):
 def test_contribution_record_requires_consent_for_public_visibility():
     import pytest
 
-    from hermes_mesh import CapabilityMeshValidationError, validate_contribution_record
+    from capability_mesh import CapabilityMeshValidationError, validate_contribution_record
 
     with pytest.raises(CapabilityMeshValidationError):
         validate_contribution_record(

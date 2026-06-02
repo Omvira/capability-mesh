@@ -17,7 +17,7 @@ import pytest
 
 
 def _register_dashboard_node(mesh_home):
-    from hermes_mesh import build_default_capability_manifest, register_node_manifest
+    from capability_mesh import build_default_capability_manifest, register_node_manifest
 
     manifest = build_default_capability_manifest(
         node_id="dash-node",
@@ -35,7 +35,7 @@ def _register_dashboard_node(mesh_home):
 
 @pytest.fixture
 def dashboard_url(tmp_path):
-    from hermes_mesh.dashboard import make_server
+    from capability_mesh.dashboard import make_server
 
     _register_dashboard_node(tmp_path)
     server = make_server(port=0, mesh_home=tmp_path)
@@ -168,7 +168,7 @@ def test_dashboard_html_hides_registered_nodes_until_nodes_stat_clicked(dashboar
     assert "Capability Mesh" in html
     assert 'id="nodesStat"' in html
     assert 'id="nodesDrawer"' in html
-    assert 'aria-label="Registered Hermes nodes"' not in html
+    assert 'aria-label="Registered private-runtime nodes"' not in html
     assert "<h2>Registered nodes</h2>" not in html
     assert "Dashboard Node" not in html
     assert "dash-node" not in html
@@ -194,9 +194,9 @@ def test_dashboard_node_statuses_api_lists_names_capabilities_and_online_status(
 
 
 def test_node_heartbeat_updates_public_status_without_private_state(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
 
     response = client.heartbeat("dash-node", status="busy")
 
@@ -219,8 +219,8 @@ def test_node_heartbeat_updates_public_status_without_private_state(dashboard_ur
 
 
 def test_public_presence_derives_online_stale_offline_and_never_seen(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, record_node_heartbeat, register_node_manifest
-    from hermes_mesh.dashboard import make_server
+    from capability_mesh import build_default_capability_manifest, record_node_heartbeat, register_node_manifest
+    from capability_mesh.dashboard import make_server
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for node_id in ["online-node", "stale-node", "offline-node", "never-node"]:
@@ -442,9 +442,9 @@ def test_server_routes_tasks_and_records_filtered_results(dashboard_url):
 
 
 def test_client_can_call_standalone_server(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
     assert client.health()["ok"] is True
     assert client.list_nodes()[0]["node_id"] == "dash-node"
     assert client.post_task(_task("task-2"))["ok"] is True
@@ -453,9 +453,9 @@ def test_client_can_call_standalone_server(dashboard_url):
 
 
 def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    card = HermesMeshClient(dashboard_url).agent_card()
+    card = CapabilityMeshClient(dashboard_url).agent_card()
 
     assert card["name"] == "Capability Mesh Server"
     assert card["url"] == dashboard_url
@@ -472,10 +472,10 @@ def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
 
 
 def test_a2a_text_and_image_message_exchange_returns_artifacts(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
     image_bytes = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii")
-    response = HermesMeshClient(dashboard_url).send_a2a_message(
+    response = CapabilityMeshClient(dashboard_url).send_a2a_message(
         {
             "role": "ROLE_USER",
             "parts": [
@@ -496,9 +496,9 @@ def test_a2a_text_and_image_message_exchange_returns_artifacts(dashboard_url):
 
 
 def test_server_sees_client_heartbeat_online_and_client_checks_health(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
 
     assert client.server_is_healthy() is True
     client.heartbeat("dash-node")
@@ -515,7 +515,7 @@ def test_server_exposes_planning_step_for_node_tool_calls(dashboard_url):
             "task": _task("task-plan"),
             "subtask": {
                 "objective": "Run only the dashboard tests",
-                "inputs": {"path": "tests/hermes_mesh/test_dashboard.py"},
+                "inputs": {"path": "tests/capability_mesh/test_dashboard.py"},
                 "required_tools": ["pytest"],
             },
         },
@@ -598,9 +598,9 @@ def test_server_plan_step_can_mix_server_then_node_without_private_leaks(dashboa
 
 
 def test_client_plan_step_uses_mixed_planning_endpoint(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
     client.post_task(_task("task-client-step"))
 
     planned = client.plan_step(
@@ -613,9 +613,9 @@ def test_client_plan_step_uses_mixed_planning_endpoint(dashboard_url):
 
 
 def test_client_plan_task_uses_planning_endpoint(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.client import CapabilityMeshClient
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
     client.post_task(_task("task-client-plan"))
 
     planned = client.plan_task(
@@ -672,8 +672,8 @@ def test_node_can_poll_claim_and_complete_assignment(dashboard_url):
 
 
 def test_completion_routes_to_next_candidate_when_result_fails(tmp_path):
-    from hermes_mesh import build_default_capability_manifest
-    from hermes_mesh.dashboard import make_server
+    from capability_mesh import build_default_capability_manifest
+    from capability_mesh.dashboard import make_server
 
     alpha = build_default_capability_manifest(
         node_id="alpha-node",
@@ -691,7 +691,7 @@ def test_completion_routes_to_next_candidate_when_result_fails(tmp_path):
     alpha["policies"]["requires_human_approval"] = False
     beta["policies"]["auto_accept_task_types"] = ["test_running"]
     beta["policies"]["requires_human_approval"] = False
-    from hermes_mesh import register_node_manifest
+    from capability_mesh import register_node_manifest
 
     register_node_manifest(alpha, mesh_home=tmp_path)
     register_node_manifest(beta, mesh_home=tmp_path)
@@ -718,9 +718,9 @@ def test_completion_routes_to_next_candidate_when_result_fails(tmp_path):
 
 
 def test_client_run_next_assignment_dispatches_local_agent_and_completes(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, register_node_manifest
-    from hermes_mesh.client import HermesMeshClient
-    from hermes_mesh.dashboard import make_server
+    from capability_mesh import build_default_capability_manifest, register_node_manifest
+    from capability_mesh.client import CapabilityMeshClient
+    from capability_mesh.dashboard import make_server
 
     manifest = build_default_capability_manifest(
         node_id="agent-node",
@@ -741,7 +741,7 @@ def test_client_run_next_assignment_dispatches_local_agent_and_completes(tmp_pat
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = HermesMeshClient(f"http://127.0.0.1:{server.server_port}")
+        client = CapabilityMeshClient(f"http://127.0.0.1:{server.server_port}")
         assert client.post_task(_task("task-agent"))["ok"] is True
         assert client.route_task(_task("task-agent"), required_tools=["pytest"])["assignment"]["node_id"] == "agent-node"
 
@@ -760,8 +760,8 @@ def test_client_run_next_assignment_dispatches_local_agent_and_completes(tmp_pat
 
 
 def test_server_can_wake_webhook_node_without_exposing_private_transport(tmp_path):
-    from hermes_mesh import build_default_capability_manifest, register_node_manifest
-    from hermes_mesh.dashboard import make_server, public_node_view
+    from capability_mesh import build_default_capability_manifest, register_node_manifest
+    from capability_mesh.dashboard import make_server, public_node_view
 
     wake_server, wake_thread, wake_url, received, headers_seen = _wake_receiver()
     try:
@@ -823,10 +823,10 @@ def test_server_can_wake_webhook_node_without_exposing_private_transport(tmp_pat
 
 
 def test_client_and_cli_can_request_assignment_wake(dashboard_url):
-    from hermes_mesh.client import HermesMeshClient
-    from hermes_mesh.cli import build_parser
+    from capability_mesh.client import CapabilityMeshClient
+    from capability_mesh.cli import build_parser
 
-    client = HermesMeshClient(dashboard_url)
+    client = CapabilityMeshClient(dashboard_url)
     client.post_task(_task("task-client-wake"))
     routed = client.route_task(_task("task-client-wake"), required_tools=["pytest"])
 
@@ -839,7 +839,7 @@ def test_client_and_cli_can_request_assignment_wake(dashboard_url):
 
 
 def test_cli_parses_mcp_server_url_aliases(dashboard_url):
-    from hermes_mesh.cli import build_parser
+    from capability_mesh.cli import build_parser
 
     by_url = build_parser().parse_args(["mcp-server", "--url", dashboard_url, "--timeout", "3"])
     by_mesh_url = build_parser().parse_args(["mcp-server", "--mesh-url", dashboard_url])
@@ -851,7 +851,7 @@ def test_cli_parses_mcp_server_url_aliases(dashboard_url):
 
 
 def test_mcp_sanitization_removes_private_transport_fields():
-    from hermes_mesh.mcp_server import sanitize_for_mcp
+    from capability_mesh.mcp_server import sanitize_for_mcp
 
     sanitized = sanitize_for_mcp(
         {
@@ -899,7 +899,7 @@ def test_mcp_sanitization_removes_private_transport_fields():
 def test_mcp_server_registers_expected_tools_and_runs_stdio(monkeypatch):
     import types
 
-    from hermes_mesh import mcp_server
+    from capability_mesh import mcp_server
 
     registered: dict[str, object] = {}
     run_calls: list[str] = []
@@ -941,7 +941,7 @@ def test_mcp_server_registers_expected_tools_and_runs_stdio(monkeypatch):
 def test_mcp_server_reports_clear_error_when_sdk_missing(monkeypatch, capsys):
     import builtins
 
-    from hermes_mesh.mcp_server import run_mcp_server
+    from capability_mesh.mcp_server import run_mcp_server
 
     real_import = builtins.__import__
 
@@ -959,7 +959,7 @@ def test_mcp_server_reports_clear_error_when_sdk_missing(monkeypatch, capsys):
 
 
 def test_client_cli_parses_heartbeat_commands(dashboard_url):
-    from hermes_mesh.cli import build_parser
+    from capability_mesh.cli import build_parser
 
     heartbeat = build_parser().parse_args(["client", "--url", dashboard_url, "heartbeat", "dash-node", "--status", "idle"])
     loop = build_parser().parse_args(
@@ -974,8 +974,8 @@ def test_client_cli_parses_heartbeat_commands(dashboard_url):
 
 
 def test_client_install_cli_registers_manifest_and_sends_initial_heartbeat(dashboard_url, tmp_path):
-    from hermes_mesh.cli import build_parser, cmd_client_install
-    from hermes_mesh.client import HermesMeshClient
+    from capability_mesh.cli import build_parser, cmd_client_install
+    from capability_mesh.client import CapabilityMeshClient
 
     config_dir = tmp_path / "client-home"
     args = build_parser().parse_args(
@@ -992,7 +992,7 @@ def test_client_install_cli_registers_manifest_and_sends_initial_heartbeat(dashb
             "--task-type",
             "smoke",
             "--tool",
-            "hermes",
+            "python",
             "--allow-auto-accept",
             "--once",
             "--config-dir",
@@ -1009,7 +1009,7 @@ def test_client_install_cli_registers_manifest_and_sends_initial_heartbeat(dashb
     assert manifest["privacy"]["expose_local_skills"] is False
     assert manifest["privacy"]["expose_memory"] is False
     assert manifest["policies"]["auto_accept_task_types"] == ["smoke"]
-    node = HermesMeshClient(dashboard_url).get_node("trial-client")
+    node = CapabilityMeshClient(dashboard_url).get_node("trial-client")
     assert node["online_status"]["status"] == "online"
 
 
@@ -1026,7 +1026,7 @@ def test_install_client_script_dry_run_manifest_is_privacy_safe(capsys):
             "--task-type",
             "smoke",
             "--tool",
-            "hermes",
+            "python",
             "--dry-run",
         ]
     )
@@ -1052,14 +1052,14 @@ def test_install_client_config_dir_prefers_capability_env(monkeypatch, tmp_path)
     from scripts import install_client
 
     new_home = tmp_path / "new-client-home"
-    legacy_home = tmp_path / "legacy-client-home"
+    configured_home = tmp_path / "configured-client-home"
 
     monkeypatch.delenv("CAPABILITY_MESH_CLIENT_HOME", raising=False)
-    monkeypatch.delenv("HERMES_MESH_CLIENT_HOME", raising=False)
+    monkeypatch.delenv("CAPABILITY_MESH_CLIENT_HOME", raising=False)
     assert install_client._default_config_dir() == Path.home() / ".capability-mesh" / "client"
 
-    monkeypatch.setenv("HERMES_MESH_CLIENT_HOME", str(legacy_home))
-    assert install_client._default_config_dir() == legacy_home
+    monkeypatch.setenv("CAPABILITY_MESH_CLIENT_HOME", str(configured_home))
+    assert install_client._default_config_dir() == configured_home
 
     monkeypatch.setenv("CAPABILITY_MESH_CLIENT_HOME", str(new_home))
     assert install_client._default_config_dir() == new_home

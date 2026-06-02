@@ -17,7 +17,7 @@ from capability_mesh.core import (
 )
 
 
-class HermesMeshClientError(RuntimeError):
+class CapabilityMeshClientError(RuntimeError):
     """Raised when a Capability Mesh service request fails."""
 
 
@@ -42,18 +42,18 @@ def _json_request(
             raw = resp.read().decode("utf-8")
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise HermesMeshClientError(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+        raise CapabilityMeshClientError(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
     except error.URLError as exc:
-        raise HermesMeshClientError(f"{method} {url} failed: {exc.reason}") from exc
+        raise CapabilityMeshClientError(f"{method} {url} failed: {exc.reason}") from exc
     if not raw:
         return {}
     parsed = json.loads(raw)
     if not isinstance(parsed, (dict, list)):
-        raise HermesMeshClientError(f"{method} {url} returned non-object JSON")
+        raise CapabilityMeshClientError(f"{method} {url} returned non-object JSON")
     return parsed
 
 
-class HermesMeshClient:
+class CapabilityMeshClient:
     """Small stdlib HTTP client for the standalone Capability Mesh service."""
 
     def __init__(self, base_url: str, *, timeout: float = 10.0):
@@ -63,31 +63,31 @@ class HermesMeshClient:
     def health(self) -> dict[str, Any]:
         data = _json_request(self.base_url, "/health", timeout=self.timeout)
         if not isinstance(data, dict):
-            raise HermesMeshClientError("health endpoint returned a list")
+            raise CapabilityMeshClientError("health endpoint returned a list")
         return data
 
     def server_is_healthy(self) -> bool:
         try:
             return self.health().get("ok") is True
-        except HermesMeshClientError:
+        except CapabilityMeshClientError:
             return False
 
     def agent_card(self) -> dict[str, Any]:
         data = _json_request(self.base_url, "/.well-known/agent-card.json", timeout=self.timeout)
         if not isinstance(data, dict):
-            raise HermesMeshClientError("agent card endpoint returned a list")
+            raise CapabilityMeshClientError("agent card endpoint returned a list")
         return data
 
     def list_nodes(self) -> list[dict[str, Any]]:
         data = _json_request(self.base_url, "/api/nodes", timeout=self.timeout)
         if not isinstance(data, list):
-            raise HermesMeshClientError("nodes endpoint returned a non-list")
+            raise CapabilityMeshClientError("nodes endpoint returned a non-list")
         return [dict(node) for node in data]
 
     def get_node(self, node_id: str) -> dict[str, Any]:
         data = _json_request(self.base_url, f"/api/nodes/{quote(node_id)}", timeout=self.timeout)
         if not isinstance(data, dict):
-            raise HermesMeshClientError("node endpoint returned a list")
+            raise CapabilityMeshClientError("node endpoint returned a list")
         return data
 
     def register_node(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -99,7 +99,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("register endpoint returned a list")
+            raise CapabilityMeshClientError("register endpoint returned a list")
         return data
 
     def heartbeat(self, node_id: str, *, status: str = "online") -> dict[str, Any]:
@@ -111,7 +111,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("heartbeat endpoint returned a list")
+            raise CapabilityMeshClientError("heartbeat endpoint returned a list")
         return data
 
     def post_task(self, task: Mapping[str, Any]) -> dict[str, Any]:
@@ -123,7 +123,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("post task endpoint returned a list")
+            raise CapabilityMeshClientError("post task endpoint returned a list")
         return data
 
     def route_task(
@@ -146,7 +146,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("route endpoint returned a list")
+            raise CapabilityMeshClientError("route endpoint returned a list")
         return data
 
     def plan_task(
@@ -166,7 +166,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("plan endpoint returned a list")
+            raise CapabilityMeshClientError("plan endpoint returned a list")
         return data
 
     def plan_step(
@@ -186,7 +186,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("plan-step endpoint returned a list")
+            raise CapabilityMeshClientError("plan-step endpoint returned a list")
         return data
 
     def record_result(self, result: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
@@ -200,7 +200,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("record result endpoint returned a list")
+            raise CapabilityMeshClientError("record result endpoint returned a list")
         if "record" in data and isinstance(data["record"], dict):
             validate_task_result_record(data["record"])
         return data
@@ -212,13 +212,13 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, list):
-            raise HermesMeshClientError("node assignments endpoint returned a non-list")
+            raise CapabilityMeshClientError("node assignments endpoint returned a non-list")
         return [dict(item) for item in data]
 
     def list_assignments(self) -> list[dict[str, Any]]:
         data = _json_request(self.base_url, "/api/assignments", timeout=self.timeout)
         if not isinstance(data, list):
-            raise HermesMeshClientError("assignments endpoint returned a non-list")
+            raise CapabilityMeshClientError("assignments endpoint returned a non-list")
         return [dict(item) for item in data]
 
     def claim_assignment(self, assignment_id: str, node_id: str) -> dict[str, Any]:
@@ -230,7 +230,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("claim endpoint returned a list")
+            raise CapabilityMeshClientError("claim endpoint returned a list")
         return data
 
     def complete_assignment(
@@ -247,7 +247,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("complete endpoint returned a list")
+            raise CapabilityMeshClientError("complete endpoint returned a list")
         return data
 
     def wake_assignment(self, assignment_id: str) -> dict[str, Any]:
@@ -259,7 +259,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("wake endpoint returned a list")
+            raise CapabilityMeshClientError("wake endpoint returned a list")
         return data
 
     def send_a2a_message(self, message: Mapping[str, Any]) -> dict[str, Any]:
@@ -271,7 +271,7 @@ class HermesMeshClient:
             timeout=self.timeout,
         )
         if not isinstance(data, dict):
-            raise HermesMeshClientError("A2A message endpoint returned a list")
+            raise CapabilityMeshClientError("A2A message endpoint returned a list")
         return data
 
     def run_next_assignment(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -283,12 +283,8 @@ class HermesMeshClient:
         assignment = item.get("assignment")
         task = item.get("task")
         if not isinstance(assignment, dict) or not isinstance(task, dict):
-            raise HermesMeshClientError("assignment work item is malformed")
+            raise CapabilityMeshClientError("assignment work item is malformed")
         assignment_id = str(assignment.get("assignment_id"))
         self.claim_assignment(assignment_id, str(node["node_id"]))
         result = build_dispatch_result(node, validate_task_contract(task))
         return self.complete_assignment(assignment_id, str(node["node_id"]), result)
-
-
-CapabilityMeshClientError = HermesMeshClientError
-CapabilityMeshClient = HermesMeshClient

@@ -276,7 +276,7 @@ def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the read-only Capability Mesh dashboard.")
-    parser.add_argument("--mesh-home", default=None, help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, legacy $HERMES_MESH_HOME, or ~/.capability-mesh")
+    parser.add_argument("--mesh-home", default=None, help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, ~/.capability-mesh")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)

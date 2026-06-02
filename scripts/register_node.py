@@ -5,7 +5,7 @@ This script intentionally uses only the Python standard library so a node can
 register with a running Capability Mesh service via:
 
   curl -fsSL https://raw.githubusercontent.com/Omvira/CapabilityMesh/main/scripts/register_node.py | \
-    python3 - --mesh-url http://10.0.16.11:8765 --node-id my-node --task-type code_review --tool hermes
+    python3 - --mesh-url http://10.0.16.11:8765 --node-id my-node --task-type code_review --tool python
 
 It submits only a privacy-first capability manifest. It does not read or upload
 local skills, memory, session history, raw logs, env vars, or secrets.
@@ -62,7 +62,7 @@ def _default_display_name(node_id: str) -> str:
 
 
 def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
-    command = list(args.transport_command or ["hermes", "chat", "-q"])
+    command = list(args.transport_command or ["python", "chat", "-q"])
     resources: dict[str, Any] = {}
     if args.include_basic_resources:
         resources = {
@@ -139,11 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--display-name", default=None, help="Human-readable display name")
     parser.add_argument("--task-type", action="append", required=True, help="Task type this node can handle; repeatable")
     parser.add_argument("--tool", action="append", required=True, help="Public capability/tool label; repeatable")
-    parser.add_argument("--transport-command", action="append", help="Command argv part for future local dispatch; repeatable; default: hermes chat -q")
+    parser.add_argument("--transport-command", action="append", help="Command argv part for future local dispatch; repeatable; default: python -c pass")
     parser.add_argument("--dispatch-command", action="append", help="Optional dispatch command argv part; repeatable")
     parser.add_argument("--timeout-seconds", type=int, default=120, help="Transport timeout metadata, 1..300")
     parser.add_argument("--wake-url", help="Webhook URL this node exposes for notification-only assignment wake-up")
-    parser.add_argument("--wake-token", help="Optional shared wake token sent as X-CapabilityMesh-Wake-Token; use only over trusted networks/HTTPS. X-HermesMesh-Wake-Token is legacy compatibility.")
+    parser.add_argument("--wake-token", help="Optional shared wake token sent as X-CapabilityMesh-Wake-Token; use only over trusted networks/HTTPS.")
     parser.add_argument("--wake-timeout-seconds", type=int, default=15, help="Wake webhook timeout metadata, 1..60")
     parser.add_argument("--allow-auto-accept", action="store_true", help="Mark node as not requiring human approval")
     parser.add_argument("--auto-accept-task-type", action="append", help="Task type this node auto-accepts; repeatable")

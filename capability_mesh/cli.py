@@ -1,8 +1,7 @@
 """Standalone CLI for the independent Capability Mesh core.
 
-Run with ``python -m capability_mesh.cli``.  The registry defaults to
-``$CAPABILITY_MESH_HOME`` or ``~/.capability-mesh``. Legacy ``python -m
-hermes_mesh.cli`` and ``$HERMES_MESH_HOME`` continue to work.
+Run with ``python -m capability_mesh.cli``. The registry defaults to
+``$CAPABILITY_MESH_HOME`` or ``~/.capability-mesh``.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ from capability_mesh.core import (
     validate_optional_skill_proposal,
     validate_task_contract,
 )
-from capability_mesh.client import HermesMeshClient, HermesMeshClientError
+from capability_mesh.client import CapabilityMeshClient, CapabilityMeshClientError
 from capability_mesh.server.app import serve_dashboard
 from capability_mesh.mcp_server import run_mcp_server
 
@@ -79,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mesh-home",
         default=None,
-        help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, legacy $HERMES_MESH_HOME, or ~/.capability-mesh",
+        help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, ~/.capability-mesh",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -200,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     client_install.add_argument("--display-name", help="Human-readable client name")
     client_install.add_argument("--task-type", action="append", help="Task type this Client can handle; repeatable")
     client_install.add_argument("--tool", action="append", help="Public capability/tool label; repeatable")
-    client_install.add_argument("--transport-command", action="append", help="Transport command argv part; repeatable; default: hermes chat -q")
+    client_install.add_argument("--transport-command", action="append", help="Transport command argv part; repeatable; default: python -c pass")
     client_install.add_argument("--dispatch-command", action="append", help="Dispatch command argv part for assigned work; repeatable")
     client_install.add_argument("--timeout-seconds", type=int, default=120)
     client_install.add_argument("--allow-auto-accept", action="store_true")
@@ -362,8 +361,8 @@ def cmd_mcp_server(args: argparse.Namespace) -> int:
     return run_mcp_server(args.mesh_url, timeout=args.timeout)
 
 
-def _client(args: argparse.Namespace) -> HermesMeshClient:
-    return HermesMeshClient(args.url)
+def _client(args: argparse.Namespace) -> CapabilityMeshClient:
+    return CapabilityMeshClient(args.url)
 
 
 def cmd_client_health(args: argparse.Namespace) -> int:
@@ -541,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (CapabilityMeshValidationError, HermesMeshClientError, OSError, yaml.YAMLError) as exc:
+    except (CapabilityMeshValidationError, CapabilityMeshClientError, OSError, yaml.YAMLError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

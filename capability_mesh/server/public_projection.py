@@ -223,7 +223,7 @@ def render_ui_shell(mesh_home: str | Path | None = None) -> str:
 
 
 def render_dashboard(*_: Any, **__: Any) -> str:
-    """Compatibility wrapper for legacy dashboard imports."""
+    """Compatibility wrapper for dashboard imports."""
 
     return render_ui_shell()
 

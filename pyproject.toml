@@ -18,10 +18,9 @@ mcp = ["mcp>=1.0"]
 
 [project.scripts]
 capability-mesh = "capability_mesh.cli:main"
-hermes-mesh = "hermes_mesh.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["capability_mesh", "capability_mesh.*", "hermes_mesh", "hermes_mesh.*"]
+include = ["capability_mesh", "capability_mesh.*"]
 
 [tool.setuptools.package-data]
 capability_mesh = ["ui/static/*.html", "ui/static/*.js", "ui/static/*.css"]

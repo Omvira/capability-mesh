@@ -56,7 +56,7 @@ def sanitize_for_mcp(value: Any) -> Any:
     return str(value)
 
 
-class HermesMeshMCPTools:
+class CapabilityMeshMCPTools:
     """Thin, testable tool implementations over the Capability Mesh HTTP client."""
 
     def __init__(self, mesh_url: str, *, timeout: float = 10.0):
@@ -88,7 +88,7 @@ def _missing_sdk_error() -> str:
     return "The Python MCP SDK is required to run the stdio MCP server. Install it with `python -m pip install mcp` and retry."
 
 
-def _register_fastmcp_tools(server: Any, tools: HermesMeshMCPTools) -> None:
+def _register_fastmcp_tools(server: Any, tools: CapabilityMeshMCPTools) -> None:
     @server.tool()
     def list_clients() -> list[dict[str, Any]]:
         """List public Capability Mesh clients/nodes."""
@@ -130,7 +130,7 @@ def run_mcp_server(mesh_url: str, *, timeout: float = 10.0) -> int:
         return 1
 
     server = FastMCP("Capability Mesh")
-    _register_fastmcp_tools(server, HermesMeshMCPTools(mesh_url, timeout=timeout))
+    _register_fastmcp_tools(server, CapabilityMeshMCPTools(mesh_url, timeout=timeout))
     server.run(transport="stdio")
     return 0
 

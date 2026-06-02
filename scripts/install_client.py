@@ -56,7 +56,7 @@ def _default_node_id() -> str:
 
 
 def _default_config_dir() -> Path:
-    configured = os.environ.get("CAPABILITY_MESH_CLIENT_HOME") or os.environ.get("HERMES_MESH_CLIENT_HOME")
+    configured = os.environ.get("CAPABILITY_MESH_CLIENT_HOME") or os.environ.get("CAPABILITY_MESH_CLIENT_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".capability-mesh" / "client"
 
 
@@ -101,8 +101,8 @@ def _load_or_prompt_args(args: argparse.Namespace) -> argparse.Namespace:
     args.node_id = _prompt("Client node id", args.node_id or _default_node_id(), required=True)
     args.display_name = _prompt("Display name", args.display_name or f"Capability Mesh Client {args.node_id}")
     args.task_type = _split_csv(_prompt("Task types, comma-separated", ",".join(args.task_type or ["smoke"])), ["smoke"])
-    args.tool = _split_csv(_prompt("Public tool/capability labels, comma-separated", ",".join(args.tool or ["hermes"])), ["hermes"])
-    dispatch_default = " ".join(args.dispatch_command or ["hermes", "chat", "-q"])
+    args.tool = _split_csv(_prompt("Public tool/capability labels, comma-separated", ",".join(args.tool or ["python"])), ["python"])
+    dispatch_default = " ".join(args.dispatch_command or ["python", "chat", "-q"])
     dispatch = _prompt("Local dispatch command for assigned tasks", dispatch_default)
     args.dispatch_command = shlex.split(dispatch) if dispatch else []
     args.allow_auto_accept = _prompt_bool("Allow this trial client to auto-accept declared task types?", args.allow_auto_accept)
@@ -115,7 +115,7 @@ def _load_or_prompt_args(args: argparse.Namespace) -> argparse.Namespace:
 
 def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     task_types = list(args.task_type or ["smoke"])
-    tools = list(args.tool or ["hermes"])
+    tools = list(args.tool or ["python"])
     auto_accept = list(args.auto_accept_task_type or (task_types if args.allow_auto_accept else []))
     unknown = set(auto_accept) - set(task_types)
     if unknown:
@@ -123,7 +123,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     resources: dict[str, Any] = {}
     if args.include_basic_resources:
         resources = {"os": platform.system(), "machine": platform.machine(), "python": platform.python_version()}
-    command = list(args.transport_command or ["hermes", "chat", "-q"])
+    command = list(args.transport_command or ["python", "chat", "-q"])
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "node_id": args.node_id,
@@ -265,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--display-name", help="Human-readable client name")
     parser.add_argument("--task-type", action="append", help="Task type this Client can handle; repeatable")
     parser.add_argument("--tool", action="append", help="Public capability/tool label; repeatable")
-    parser.add_argument("--transport-command", action="append", help="Transport command argv part; repeatable; default: hermes chat -q")
+    parser.add_argument("--transport-command", action="append", help="Transport command argv part; repeatable; default: python -c pass")
     parser.add_argument("--dispatch-command", action="append", help="Dispatch command argv part for assigned work; repeatable")
     parser.add_argument("--timeout-seconds", type=int, default=120, help="Transport timeout metadata, 1..300")
     parser.add_argument("--allow-auto-accept", action="store_true", help="Mark declared task types as auto-accepted")

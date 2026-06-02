@@ -16,12 +16,12 @@ The first principle is:
 ## Architecture
 
 - `capability_mesh.core`: public namespace for schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, privacy-safe node heartbeat/status records, result filtering, verification primitives, and contribution records.
-- `capability_mesh.dashboard`: public namespace for the standalone stdlib Server. It runs the Capability Mesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry; it is not a Hermes Agent plugin.
+- `capability_mesh.dashboard`: public namespace for the standalone stdlib Server. It runs the Capability Mesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry.
 - `capability_mesh.client`: public namespace for the independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A-like message sending against a running Server.
 - `capability_mesh.cli`: public namespace for the standalone CLI for local registry operations, starting the Server, starting Client commands/loops, and launching the guided trial Client installer.
 - `scripts/install_client.py`: stdlib-only guided installer for a first Client. It prompts for safe public metadata, registers with a Server, writes a local manifest, and optionally keeps the Client online with heartbeat.
 
-Hermes Agent is only one possible legacy node runtime/adapter. Capability Mesh must not import Hermes internals and must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills. The `hermes_mesh` package and `hermes-mesh` command remain legacy compatibility aliases for existing users.
+Capability Mesh must not read or expose local memory, sessions, raw logs, reasoning traces, environment variables, or local skills.
 
 ## What Alpha includes
 
@@ -54,7 +54,7 @@ Generate and register a privacy-first node manifest:
 ```bash
 python -m capability_mesh.cli manifest \
   --node-id local-node-1 \
-  --display-name "Local Hermes" \
+  --display-name "Local Agent" \
   --task-type code_review \
   --task-type test_running \
   --tool terminal \

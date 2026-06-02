@@ -87,10 +87,8 @@ _SAFE_SSH_USER = re.compile(r"^[A-Za-z0-9_.-]+$")
 DEFAULT_TRANSPORT_COMMAND = [sys.executable, "-c", "print('capability-mesh')"]
 DEFAULT_TRANSPORT_TIMEOUT = 10
 CAPABILITY_MESH_HOME_ENV = "CAPABILITY_MESH_HOME"
-HERMES_MESH_HOME_ENV = "HERMES_MESH_HOME"
 DEFAULT_CAPABILITY_MESH_HOME = ".capability-mesh"
 CAPABILITY_MESH_WAKE_TOKEN_HEADER = "X-CapabilityMesh-Wake-Token"
-HERMES_MESH_WAKE_TOKEN_HEADER = "X-HermesMesh-Wake-Token"
 
 
 class CapabilityMeshValidationError(ValueError):
@@ -313,23 +311,20 @@ def validate_transport_metadata(transport: Mapping[str, Any]) -> dict[str, Any]:
 def default_mesh_home() -> Path:
     """Return the standalone mesh home directory.
 
-    Standalone users can set CAPABILITY_MESH_HOME. HERMES_MESH_HOME is supported
-    as a legacy fallback; otherwise mesh state lives under ~/.capability-mesh.
+    Standalone users can set CAPABILITY_MESH_HOME; otherwise mesh state lives under ~/.capability-mesh.
     Adapters may pass an explicit mesh_home to registry helpers.
     """
 
-    configured = os.environ.get(CAPABILITY_MESH_HOME_ENV) or os.environ.get(HERMES_MESH_HOME_ENV)
+    configured = os.environ.get(CAPABILITY_MESH_HOME_ENV)
     if configured:
         return Path(configured).expanduser()
     return Path.home() / DEFAULT_CAPABILITY_MESH_HOME
 
 
 def wake_token_from_headers(headers: Mapping[str, Any]) -> str | None:
-    """Return the preferred wake token header, accepting the legacy name."""
+    """Return the Capability Mesh wake token header."""
 
     token = headers.get(CAPABILITY_MESH_WAKE_TOKEN_HEADER)
-    if token is None:
-        token = headers.get(HERMES_MESH_WAKE_TOKEN_HEADER)
     return None if token is None else str(token)
 
 
