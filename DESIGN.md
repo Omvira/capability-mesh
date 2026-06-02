@@ -36,6 +36,7 @@ Capability Mesh must not read or expose local memory, sessions, raw logs, reason
 - A2A Protocol 1.0 JSON APIs validated with the official `a2a-sdk`: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, response artifacts, SSE `StreamResponse` events, push notification configs, and JSON-RPC core operation binding.
 - Contribution records that remain local-private unless explicit human consent is supplied for team/public visibility.
 - A standalone HTTP service and a bundled HTTP client.
+- Hub/Node production layer: Hub AgentCard registry and discovery, standalone Node A2A server, Node-side A2A client helper, HTTP relay, bearer-auth guarded mutating routes, file policy engine, structured audit, durable async worker records, push delivery retry records, optional gRPC adapter helpers, and deployment templates.
 
 ## What Alpha intentionally does not include
 
@@ -46,6 +47,7 @@ Capability Mesh must not read or expose local memory, sessions, raw logs, reason
 - No arbitrary server-local execution tools.
 - No default sharing of private local workflows.
 - No public exposure of local dispatch commands; node execution uses the node's own local Agent command.
+- No claim that Capability Mesh HTTP relay, long-poll placeholder, WebSocket/tunnel plans, or gRPC helper are official A2A transport bindings. They are custom deployment bindings around SDK-validated A2A JSON surfaces.
 
 ## CLI examples
 
@@ -144,6 +146,14 @@ Node heartbeat/status persistence is intentionally narrow. `POST /api/nodes/{nod
 ## A2A Shape
 
 Capability Mesh follows Google's A2A protocol shape as closely as practical with stdlib-only JSON APIs. The Server publishes an Agent Card at `/.well-known/agent-card.json`. Clients send envelopes to `POST /api/a2a/messages` with `role` (`user` or `agent`) and `parts`. Supported part shapes are text parts, file parts, and data parts. File parts can carry image content as base64 `bytes` or a `uri` plus `mimeType`. The Server responds with a task envelope containing `id`, `contextId`, `status`, `history`, and `artifacts`.
+
+Public A2A surfaces are validated with Google A2A SDK models where practical: AgentCard, SendMessageResponse, Task, ListTasksResponse, StreamResponse, and TaskPushNotificationConfig. Node AgentCards expose only public capabilities and supported interface URLs; private command, token, wake, session, memory, and dispatch data are excluded.
+
+Production runtime records are intentionally separate from public A2A Tasks. Async message execution persists lifecycle metadata under `runtime/tasks`, while public task state remains under `a2a-tasks` and keeps A2A Task semantics. Push delivery attempts are recorded under `push-deliveries` with redacted auth metadata. Structured audit is JSONL and redacts secret-looking headers/body fields.
+
+Policy files live at `CAPABILITY_MESH_HOME/policy.yaml`, `policy.yml`, or `policy.json`. Mutating Hub routes and relay are checked before execution. A missing policy file defaults to allow for development compatibility; production deployments should install explicit deny-by-default policy.
+
+Relay is a Capability Mesh custom HTTP forwarding layer. It preserves A2A JSON payload semantics and maps unavailable targets to a JSON `502`. `GET /relay/pull/nodes/{node_id}` is only a custom long-poll placeholder for future tunnel work and is not an official A2A binding.
 
 This A2A surface is intentionally a content-transfer/API shape, not a private state channel. Agent Cards and public node views do not expose local skills, memory, sessions, logs, environment variables, secrets, wake URLs, tokens, transport commands, or dispatch commands.
 

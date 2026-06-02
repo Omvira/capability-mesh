@@ -15,6 +15,7 @@ dependencies = ["a2a-sdk>=1.1.0", "pyyaml>=6.0"]
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 mcp = ["mcp>=1.0"]
+grpc = ["grpcio>=1.60", "grpcio-tools>=1.60"]
 
 [project.scripts]
 capability-mesh = "capability_mesh.cli:main"

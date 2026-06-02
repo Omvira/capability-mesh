@@ -133,11 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
     server = sub.add_parser("server", help="Run the Capability Mesh HTTP service and dashboard")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
+    server.add_argument("--auth-token", default=None)
     server.set_defaults(func=cmd_server)
 
     dashboard = sub.add_parser("dashboard", help="Alias for server")
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--auth-token", default=None)
     dashboard.set_defaults(func=cmd_server)
 
     hub = sub.add_parser("hub", help="Run and manage the Capability Mesh Hub")
@@ -145,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     hub_start = hub_sub.add_parser("start", help="Start the Hub HTTP service and dashboard")
     hub_start.add_argument("--host", default="127.0.0.1")
     hub_start.add_argument("--port", type=int, default=8765)
+    hub_start.add_argument("--auth-token", default=None)
     hub_start.set_defaults(func=cmd_server)
     hub_register = hub_sub.add_parser("register-node", help="Register a node AgentCard with the Hub registry")
     hub_register.add_argument("--manifest", required=True)
@@ -162,6 +165,12 @@ def build_parser() -> argparse.ArgumentParser:
     node_card.add_argument("--public-url")
     node_card.add_argument("--relay-url")
     node_card.set_defaults(func=cmd_node_agent_card)
+    node_start = node_sub.add_parser("start", help="Start a standalone A2A Node server")
+    node_start.add_argument("--manifest", required=True)
+    node_start.add_argument("--host", default="127.0.0.1")
+    node_start.add_argument("--port", type=int, default=8766)
+    node_start.add_argument("--public-url")
+    node_start.set_defaults(func=cmd_node_start)
 
     mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a Capability Mesh service")
     mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
@@ -378,13 +387,21 @@ def cmd_contributions(args: argparse.Namespace) -> int:
 
 
 def cmd_server(args: argparse.Namespace) -> int:
-    serve_dashboard(host=args.host, port=args.port, mesh_home=_mesh_home(args))
+    serve_dashboard(host=args.host, port=args.port, mesh_home=_mesh_home(args), auth_token=args.auth_token)
     return 0
 
 
 def cmd_node_agent_card(args: argparse.Namespace) -> int:
     manifest = _load_yaml_or_json(args.manifest)
     _write_json_or_stdout(build_node_agent_card(manifest, public_url=args.public_url, relay_url=args.relay_url))
+    return 0
+
+
+def cmd_node_start(args: argparse.Namespace) -> int:
+    from capability_mesh.node.runtime import serve_node
+
+    manifest = _load_yaml_or_json(args.manifest)
+    serve_node(manifest, host=args.host, port=args.port, mesh_home=_mesh_home(args), public_url=args.public_url)
     return 0
 
 

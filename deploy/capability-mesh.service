@@ -1,0 +1,21 @@
+[Unit]
+Description=Capability Mesh Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CAPABILITY_MESH_HOME=/var/lib/capability-mesh
+EnvironmentFile=-/etc/capability-mesh/capability-mesh.env
+WorkingDirectory=/opt/capability-mesh
+ExecStart=/opt/capability-mesh/.venv/bin/capability-mesh hub start --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/capability-mesh
+
+[Install]
+WantedBy=multi-user.target

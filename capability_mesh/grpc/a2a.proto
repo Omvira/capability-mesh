@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package capability_mesh.a2a.v1;
+
+// Minimal gRPC binding envelope for A2A JSON/protobuf gateway deployments.
+service A2AService {
+  rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
+  rpc GetTask (GetTaskRequest) returns (TaskResponse);
+  rpc ListTasks (ListTasksRequest) returns (ListTasksResponse);
+  rpc CancelTask (CancelTaskRequest) returns (TaskResponse);
+}
+
+message SendMessageRequest { string json = 1; }
+message SendMessageResponse { string json = 1; }
+message GetTaskRequest { string id = 1; }
+message CancelTaskRequest { string id = 1; }
+message ListTasksRequest {}
+message TaskResponse { string json = 1; }
+message ListTasksResponse { string json = 1; }

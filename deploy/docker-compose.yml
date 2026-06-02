@@ -1,0 +1,21 @@
+services:
+  capability-mesh:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+      - capability-mesh-data:/var/lib/capability-mesh
+    environment:
+      CAPABILITY_MESH_HOME: /var/lib/capability-mesh
+      CAPABILITY_MESH_AUTH_TOKEN: ${CAPABILITY_MESH_AUTH_TOKEN:-change-me}
+    env_file:
+      - path: .env
+        required: false
+    command: >
+      sh -c "pip install -e . && capability-mesh hub start --host 0.0.0.0 --port 8765"
+    ports:
+      - "8765:8765"
+    restart: unless-stopped
+
+volumes:
+  capability-mesh-data:

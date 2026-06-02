@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,12 +59,51 @@ from capability_mesh.server.public_projection import (
     read_static_asset,
     render_ui_shell,
 )
+from capability_mesh.node.runtime_queue import DurableTaskRuntime
+from capability_mesh.server.audit import record_audit_event
+from capability_mesh.server.outbound import private_networks_allowed_for_server, validate_outbound_http_url
+from capability_mesh.server.policy import is_action_allowed
+from capability_mesh.server.push import deliver_push_notification
 
 
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     mesh_home: Path | None = None
+    auth_token: str | None = None
+    runtime: DurableTaskRuntime | None = None
+    relay_timeout_seconds: float = 10.0
+
+    def _audit(self, action: str, status: str, body: Mapping[str, Any] | None = None) -> None:
+        node_id = None
+        if action.startswith("relay/nodes/"):
+            node_id = action.removeprefix("relay/nodes/").split("/", 1)[0]
+        record_audit_event(
+            mesh_home=self.mesh_home,
+            action=action,
+            status=status,
+            path=urlsplit(self.path).path,
+            remote_addr=self.client_address[0] if self.client_address else None,
+            node_id=node_id,
+            headers={key: value for key, value in self.headers.items()},
+            body=body,
+        )
+
+    def _authorize_mutation(self, action: str, body: Mapping[str, Any]) -> bool:
+        if not is_action_allowed(action, mesh_home=self.mesh_home):
+            self._audit(action, "policy_denied", body)
+            self._send_json({"error": "policy denied"}, status=HTTPStatus.FORBIDDEN)
+            return False
+        if not self.auth_token:
+            self._audit(action, "allowed", body)
+            return True
+        expected = f"Bearer {self.auth_token}"
+        if hmac.compare_digest(self.headers.get("Authorization", ""), expected):
+            self._audit(action, "allowed", body)
+            return True
+        self._audit(action, "denied", body)
+        self._send_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+        return False
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -95,6 +140,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(list_a2a_tasks(self.mesh_home))
             elif path == "/tasks":
                 self._send_json(build_a2a_list_tasks_response(self.mesh_home), content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/relay/pull/nodes/"):
+                node_id = unquote(path.removeprefix("/relay/pull/nodes/").strip("/"))
+                self._send_json({"node_id": node_id, "messages": [], "binding": "custom-long-poll-placeholder"})
             elif path.startswith("/tasks/") and path.endswith("/push-notification-configs"):
                 suffix = path.removeprefix("/tasks/").removesuffix("/push-notification-configs")
                 task_id = unquote(suffix.rstrip("/"))
@@ -115,16 +163,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         try:
             data = self._read_json_body()
-            if path == "/api/nodes":
+            action = path.strip("/") or "root"
+            if not self._authorize_mutation(action, data):
+                return
+            if path.startswith("/relay/nodes/"):
+                self._proxy_relay(path, data)
+            elif path == "/api/nodes":
                 saved = register_node_manifest(data, mesh_home=self.mesh_home)
                 self._send_json({"ok": True, "path": str(saved), "node_id": data.get("node_id")})
             elif path == "/a2a/jsonrpc":
                 self._send_json(handle_a2a_jsonrpc(data, mesh_home=self.mesh_home), content_type="application/json; charset=utf-8")
             elif path in {"/message:send", "/api/a2a/messages", "/api/a2a/tasks/send"}:
                 message = data.get("message", data)
-                task = build_a2a_task(message)
-                record_a2a_task(task, mesh_home=self.mesh_home)
-                self._send_json(task, content_type="application/a2a+json; charset=utf-8")
+                if self._is_async_message(message):
+                    task = self._submit_async_message(message)
+                    self._send_json(task, status=HTTPStatus.ACCEPTED, content_type="application/a2a+json; charset=utf-8")
+                else:
+                    task = build_a2a_task(message)
+                    record_a2a_task(task, mesh_home=self.mesh_home)
+                    self._send_json(task, content_type="application/a2a+json; charset=utf-8")
             elif path.startswith("/tasks/") and path.endswith(":cancel"):
                 task_id = unquote(path.removeprefix("/tasks/").removesuffix(":cancel"))
                 task = cancel_a2a_task(task_id, mesh_home=self.mesh_home)
@@ -132,9 +189,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path.startswith("/tasks/") and path.endswith("/push-notification-configs"):
                 suffix = path.removeprefix("/tasks/").removesuffix("/push-notification-configs")
                 task_id = unquote(suffix.rstrip("/"))
+                self._validate_outbound_url(str(data.get("url") or ""))
                 record_task_push_notification_config(task_id, data, mesh_home=self.mesh_home)
                 config = list_task_push_notification_configs(task_id, mesh_home=self.mesh_home)["configs"][-1]
                 self._send_json(config, content_type="application/a2a+json; charset=utf-8")
+                self._deliver_existing_completed_task_push(task_id, config)
             elif path == "/message:stream":
                 message = data.get("message", data)
                 events = build_a2a_stream_responses(message)
@@ -240,7 +299,152 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         except (CapabilityMeshValidationError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            if not getattr(self, "_headers_started", False):
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+
+    def _is_async_message(self, message: Any) -> bool:
+        if not isinstance(message, Mapping):
+            return False
+        metadata = message.get("metadata")
+        if not isinstance(metadata, Mapping):
+            return False
+        mesh_meta = metadata.get("capabilityMesh")
+        return isinstance(mesh_meta, Mapping) and bool(mesh_meta.get("async"))
+
+    def _async_delay(self, message: Mapping[str, Any]) -> float:
+        metadata = message.get("metadata")
+        if isinstance(metadata, Mapping):
+            mesh_meta = metadata.get("capabilityMesh")
+            if isinstance(mesh_meta, Mapping):
+                try:
+                    return max(0.0, min(float(mesh_meta.get("delaySeconds", 0.1)), 60.0))
+                except (TypeError, ValueError):
+                    return 0.1
+        return 0.1
+
+    def _submit_async_message(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        envelope = build_a2a_task(message)
+        task = dict(envelope["task"])
+        task["status"] = {
+            "state": "TASK_STATE_WORKING",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "message": {
+                "messageId": f"{task['id']}-working",
+                "role": "ROLE_AGENT",
+                "contextId": task.get("contextId", task["id"]),
+                "taskId": task["id"],
+                "parts": [{"text": "task accepted for asynchronous execution"}],
+            },
+        }
+        record_a2a_task({"task": task}, mesh_home=self.mesh_home)
+        delay = self._async_delay(message)
+        if self.runtime is not None:
+            self.runtime.submit(lambda: self._complete_async_task(task["id"], envelope["task"], delay), task_id=f"a2a-{task['id']}")
+        else:
+            self._complete_async_task(task["id"], envelope["task"], delay)
+        return {"task": task}
+
+    def _complete_async_task(self, task_id: str, completed_task: Mapping[str, Any], delay: float) -> None:
+        time.sleep(delay)
+        task = dict(completed_task)
+        record_a2a_task({"task": task}, mesh_home=self.mesh_home)
+        self._deliver_push_notifications(task_id, task)
+
+    def _deliver_push_notifications(self, task_id: str, task: Mapping[str, Any]) -> None:
+        try:
+            configs = list_task_push_notification_configs(task_id, mesh_home=self.mesh_home).get("configs", [])
+        except CapabilityMeshValidationError:
+            return
+        for config in configs:
+            if not isinstance(config, Mapping) or not isinstance(config.get("url"), str):
+                continue
+            bearer_token = None
+            auth = config.get("authentication")
+            if isinstance(auth, Mapping) and auth.get("scheme") == "bearer" and auth.get("credentials"):
+                bearer_token = str(auth["credentials"])
+            deliver_push_notification(task_id=task_id, task=task, config=config, mesh_home=self.mesh_home, bearer_token=bearer_token, timeout=5, max_attempts=2, allow_private_networks=self._private_outbound_allowed())
+
+    def _deliver_existing_completed_task_push(self, task_id: str, config: Mapping[str, Any]) -> None:
+        try:
+            response = get_a2a_task(task_id, mesh_home=self.mesh_home)
+        except CapabilityMeshValidationError:
+            return
+        task: Mapping[str, Any] | None = None
+        if isinstance(response, Mapping):
+            task_candidate = response.get("task", response)
+            if isinstance(task_candidate, Mapping):
+                task = task_candidate
+        if task is not None and isinstance(task.get("status"), Mapping) and task["status"].get("state") == "TASK_STATE_COMPLETED":
+            self._deliver_push_notifications(task_id, task)
+
+    def _private_outbound_allowed(self) -> bool:
+        host = str(self.server.server_address[0])
+        return private_networks_allowed_for_server(host)
+
+    def _validate_outbound_url(self, url: str) -> str:
+        try:
+            return validate_outbound_http_url(url, allow_private_networks=self._private_outbound_allowed())
+        except CapabilityMeshValidationError as exc:
+            self._send_json({"error": "outbound target denied", "detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            raise
+
+    def _proxy_relay(self, path: str, data: Mapping[str, Any]) -> None:
+        suffix = path.removeprefix("/relay/nodes/")
+        node_id, separator, tail = suffix.partition("/a2a")
+        if not node_id or not separator or not re.fullmatch(r"[A-Za-z0-9_.-]+", node_id):
+            raise CapabilityMeshValidationError("relay path must be /relay/nodes/{node_id}/a2a/{operation}")
+        if tail not in {"/message:send", "/message:stream"} and not (tail.startswith("/tasks/") and (tail.endswith(":cancel") or tail == "")):
+            raise CapabilityMeshValidationError("relay operation is not allowed")
+        from capability_mesh.hub.registry import list_agent_cards
+
+        cards = list_agent_cards(mesh_home=self.mesh_home)
+        target_url = ""
+        marker = f"/relay/nodes/{node_id}/a2a"
+        for card in cards:
+            card_matches_node = False
+            for skill in card.get("skills", []):
+                if isinstance(skill, Mapping) and str(skill.get("id", "")).startswith(f"{node_id}-"):
+                    card_matches_node = True
+                    break
+            for interface in card.get("supportedInterfaces", []):
+                if isinstance(interface, Mapping):
+                    url = str(interface.get("url", "")).rstrip("/")
+                    if marker in url:
+                        target_url = url.split(marker, 1)[0].rstrip("/")
+                        break
+                    if card_matches_node and url:
+                        target_url = url
+                        break
+            if target_url:
+                break
+        if not target_url:
+            raise CapabilityMeshValidationError(f"unknown relay node: {node_id}")
+        target_url = self._validate_outbound_url(target_url)
+        endpoint = target_url + (tail or "/")
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(endpoint, data=body, headers={"Content-Type": "application/a2a+json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.relay_timeout_seconds) as resp:
+                payload = resp.read()
+                content_type = resp.headers.get("Content-Type", "application/json; charset=utf-8")
+                self.send_response(resp.status)
+                self._send_common_headers(content_type, len(payload))
+                self.end_headers()
+                self.wfile.write(payload)
+        except urllib.error.HTTPError as exc:
+            payload = exc.read()
+            if exc.code >= 500 and not payload:
+                self._send_json({"error": "relay target unavailable"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self.send_response(exc.code)
+            self._send_common_headers(exc.headers.get("Content-Type", "application/json; charset=utf-8"), len(payload))
+            self.end_headers()
+            self.wfile.write(payload)
+        except Exception as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                raise
+            self._send_json({"error": "relay target unavailable"}, status=HTTPStatus.BAD_GATEWAY)
 
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -261,6 +465,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return
 
     def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK, *, content_type: str = "application/json; charset=utf-8") -> None:
+        self._headers_started = True
         body = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self._send_common_headers(content_type, len(body))
@@ -302,16 +507,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path | None = None) -> ThreadingHTTPServer:
+def make_server(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path | None = None, auth_token: str | None = None) -> ThreadingHTTPServer:
     class Handler(DashboardHandler):
         pass
 
     Handler.mesh_home = Path(mesh_home).expanduser() if mesh_home is not None else default_mesh_home()
-    return ThreadingHTTPServer((host, port), Handler)
+    Handler.auth_token = auth_token or os.environ.get("CAPABILITY_MESH_AUTH_TOKEN")
+    Handler.runtime = DurableTaskRuntime(Handler.mesh_home, max_workers=2)
+
+    class CapabilityMeshHTTPServer(ThreadingHTTPServer):
+        def server_close(self) -> None:
+            runtime = Handler.runtime
+            if runtime is not None:
+                runtime.shutdown(wait_for_tasks=True)
+                Handler.runtime = None
+            super().server_close()
+
+    return CapabilityMeshHTTPServer((host, port), Handler)
 
 
-def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path | None = None) -> None:
-    server = make_server(host=host, port=port, mesh_home=mesh_home)
+def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, mesh_home: str | Path | None = None, auth_token: str | None = None) -> None:
+    server = make_server(host=host, port=port, mesh_home=mesh_home, auth_token=auth_token)
     try:
         print(f"Capability Mesh dashboard listening on http://{host}:{server.server_port}")
         server.serve_forever()
@@ -324,8 +540,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mesh-home", default=None, help="Mesh registry home; defaults to $CAPABILITY_MESH_HOME, ~/.capability-mesh")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--auth-token", default=None)
     args = parser.parse_args(argv)
-    serve_dashboard(host=args.host, port=args.port, mesh_home=args.mesh_home)
+    serve_dashboard(host=args.host, port=args.port, mesh_home=args.mesh_home, auth_token=args.auth_token)
     return 0
 
 

@@ -26,7 +26,16 @@ def _card_node_id(card: Mapping[str, Any]) -> str:
                 node_id = suffix.split("/", 1)[0]
                 if node_id.strip():
                     return node_id
-    raise CapabilityMeshValidationError("agent card relay supportedInterfaces[].url must include /relay/nodes/{node_id}/a2a")
+    for skill in card.get("skills", []):
+        if isinstance(skill, Mapping):
+            skill_id = skill.get("id")
+            if isinstance(skill_id, str):
+                for marker in ("-task-", "-tool-"):
+                    if marker in skill_id:
+                        node_id = skill_id.split(marker, 1)[0]
+                        if node_id.strip():
+                            return node_id
+    raise CapabilityMeshValidationError("agent card must identify a node through relay URL or node-prefixed skill ids")
 
 
 def register_node_agent_card(
