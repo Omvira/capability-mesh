@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from capability_mesh.a2a_compat import HTTP_JSON_BINDING_URI, PROTOCOL_VERSION, validate_agent_card_dict
 from capability_mesh.core import validate_capability_manifest
 
 
@@ -56,31 +57,24 @@ def build_node_agent_card(
             }
         )
 
-    return {
+    card = {
         "name": f"{display_name} Node",
-        "description": f"Capability Mesh node {node_id} exposing A2A-compatible task and tool operations.",
-        "url": url,
+        "description": f"Capability Mesh node {node_id} exposing A2A Protocol 1.0 task and tool operations.",
         "version": "0.1.0",
-        "protocolVersion": "1.0",
-        "protocolVersions": ["1.0"],
-        "preferredTransport": "HTTP+JSON",
+        "supportedInterfaces": [
+            {
+                "protocolBinding": HTTP_JSON_BINDING_URI,
+                "protocolVersion": PROTOCOL_VERSION,
+                "url": url or "/",
+            }
+        ],
         "capabilities": {
             "streaming": False,
             "pushNotifications": False,
-            "stateTransitionHistory": True,
+            "extendedAgentCard": False,
         },
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["text/plain", "application/json"],
-        "additionalInterfaces": [
-            {
-                "protocolBinding": "A2A-HTTP+JSON",
-                "transport": "HTTP+JSON",
-                "url": f"{url}/message:send" if url else "/message:send",
-            }
-        ],
         "skills": skills,
-        "metadata": {
-            "node_id": node_id,
-            "architecture": "capability-mesh-node",
-        },
     }
+    return validate_agent_card_dict(card)

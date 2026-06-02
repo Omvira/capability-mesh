@@ -43,9 +43,8 @@ def test_build_node_agent_card_uses_public_url_and_sanitizes_private_manifest_fi
     card = build_node_agent_card(_manifest(), public_url="https://node.example.com/a2a")
 
     assert card["name"] == "Alpha Node"
-    assert card["url"] == "https://node.example.com/a2a"
-    assert card["preferredTransport"] == "HTTP+JSON"
-    assert card["additionalInterfaces"][0]["protocolBinding"] == "A2A-HTTP+JSON"
+    assert card["supportedInterfaces"][0]["url"] == "https://node.example.com/a2a"
+    assert card["supportedInterfaces"][0]["protocolBinding"] == "https://a2a-protocol.org/bindings/http-json/v1"
     assert card["capabilities"]["streaming"] is False
     assert any(skill["name"] == "test_running" for skill in card["skills"])
     assert any(skill["name"] == "pytest" for skill in card["skills"])
@@ -66,7 +65,7 @@ def test_build_node_agent_card_prefers_relay_url():
         relay_url="https://hub.example.com/relay/nodes/alpha-node/a2a",
     )
 
-    assert card["url"] == "https://hub.example.com/relay/nodes/alpha-node/a2a"
+    assert card["supportedInterfaces"][0]["url"] == "https://hub.example.com/relay/nodes/alpha-node/a2a"
 
 
 def test_relay_url_shape_and_no_protocol_mutation():
@@ -95,11 +94,11 @@ def test_hub_registry_persists_lists_and_finds_agent_cards(tmp_path):
 
     card = register_node_agent_card(_manifest(), relay_base_url="https://mesh.example.com/", mesh_home=tmp_path)
 
-    assert card["url"] == "https://mesh.example.com/relay/nodes/alpha-node/a2a"
+    assert card["supportedInterfaces"][0]["url"] == "https://mesh.example.com/relay/nodes/alpha-node/a2a"
     assert (tmp_path / "agent-cards" / "alpha-node.yaml").exists()
     cards = list_agent_cards(mesh_home=tmp_path)
     assert len(cards) == 1
-    assert cards[0]["metadata"]["node_id"] == "alpha-node"
-    assert find_agent_cards_by_skill("pytest", mesh_home=tmp_path)[0]["metadata"]["node_id"] == "alpha-node"
-    assert find_agent_cards_by_skill("test_running", mesh_home=tmp_path)[0]["metadata"]["node_id"] == "alpha-node"
+    assert cards[0]["supportedInterfaces"][0]["url"].endswith("/relay/nodes/alpha-node/a2a")
+    assert find_agent_cards_by_skill("pytest", mesh_home=tmp_path)[0]["supportedInterfaces"][0]["url"].endswith("/relay/nodes/alpha-node/a2a")
+    assert find_agent_cards_by_skill("test_running", mesh_home=tmp_path)[0]["supportedInterfaces"][0]["url"].endswith("/relay/nodes/alpha-node/a2a")
     assert find_agent_cards_by_skill("missing", mesh_home=tmp_path) == []

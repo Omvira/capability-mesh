@@ -459,12 +459,10 @@ def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
 
     assert card["name"] == "Capability Mesh Hub"
     assert "distributed A2A node network" in card["description"]
-    assert card["url"] == dashboard_url
-    assert card["protocolVersion"] == "1.0"
-    assert card["protocolVersions"] == ["1.0"]
-    assert card["preferredTransport"] == "HTTP+JSON"
+    assert card["supportedInterfaces"][0]["url"] == dashboard_url
+    assert card["supportedInterfaces"][0]["protocolBinding"] == "https://a2a-protocol.org/bindings/http-json/v1"
+    assert card["supportedInterfaces"][0]["protocolVersion"] == "1.0"
     assert card["capabilities"]["streaming"] is False
-    assert card["additionalInterfaces"][0]["url"] == f"{dashboard_url}/message:send"
     assert card["skills"][0]["id"] == "capability-mesh-message-transfer"
     assert card["skills"][1]["id"] == "capability-mesh-node-discovery"
     body = json.dumps(card)

@@ -116,7 +116,7 @@ def _register_fastmcp_tools(server: Any, tools: CapabilityMeshMCPTools) -> None:
 
     @server.tool()
     def send_a2a_message(message: dict[str, Any]) -> dict[str, Any]:
-        """Send an A2A-like message envelope through Capability Mesh."""
+        """Send an A2A Protocol 1.0 message envelope through Capability Mesh."""
         return tools.send_a2a_message(message)
 
 

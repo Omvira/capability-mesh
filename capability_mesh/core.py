@@ -22,6 +22,8 @@ from urllib import error, request
 
 import yaml
 
+from capability_mesh.a2a_compat import HTTP_JSON_BINDING_URI, PROTOCOL_VERSION, validate_agent_card_dict, validate_send_message_response_dict
+
 SCHEMA_VERSION = "capability-mesh-alpha-1"
 
 DEFAULT_ALLOWED_RESULT_FIELDS = [
@@ -537,29 +539,30 @@ def build_hub_agent_card(*, hub_url: str | None = None) -> dict[str, Any]:
     """Return a privacy-safe Hub Agent Card with A2A-compatible public metadata."""
 
     url = str(hub_url or "").rstrip("/")
-    return {
+    card = {
         "name": "Capability Mesh Hub",
         "description": "Privacy-first Hub for a distributed A2A node network: registry, discovery, policy, audit, relay, and tunnel services.",
-        "url": url,
         "version": "0.1.0",
-        "protocolVersion": "1.0",
-        "protocolVersions": ["1.0"],
-        "preferredTransport": "HTTP+JSON",
+        "documentationUrl": "https://a2a-protocol.org/",
+        "supportedInterfaces": [
+            {
+                "url": url or "/",
+                "protocolBinding": HTTP_JSON_BINDING_URI,
+                "protocolVersion": PROTOCOL_VERSION,
+            }
+        ],
         "capabilities": {
             "streaming": False,
             "pushNotifications": False,
-            "stateTransitionHistory": True,
+            "extendedAgentCard": False,
         },
         "defaultInputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
         "defaultOutputModes": ["text/plain", "application/json"],
-        "additionalInterfaces": [
-            {"transport": "HTTP+JSON", "url": f"{url}/message:send" if url else "/message:send"},
-        ],
         "skills": [
             {
                 "id": "capability-mesh-message-transfer",
                 "name": "Capability Mesh Hub A2A Message Transfer",
-                "description": "Relays A2A-like message envelopes across a distributed A2A node network without exposing private node transport data.",
+                "description": "Relays A2A Protocol 1.0 message envelopes across a distributed A2A node network without exposing private node transport data.",
                 "tags": ["a2a", "hub", "node-network", "message", "task", "privacy-first"],
                 "inputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
                 "outputModes": ["text/plain", "application/json"],
@@ -574,6 +577,7 @@ def build_hub_agent_card(*, hub_url: str | None = None) -> dict[str, Any]:
             }
         ],
     }
+    return validate_agent_card_dict(card)
 
 
 def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
@@ -583,7 +587,7 @@ def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
 
 
 def validate_a2a_part(part: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate an A2A-like TextPart, FilePart, or DataPart."""
+    """Validate an A2A Protocol 1.0 TextPart, FilePart, or DataPart."""
 
     data = dict(_require_mapping(part, "part"))
     raw_kind = data.get("kind") or data.get("type")
@@ -631,7 +635,7 @@ def validate_a2a_part(part: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_a2a_message(message: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate a privacy-safe A2A-like message envelope."""
+    """Validate a privacy-safe A2A Protocol 1.0 message envelope."""
 
     data = dict(_require_mapping(message, "message"))
     role = str(data.get("role", "ROLE_USER"))
@@ -644,16 +648,27 @@ def validate_a2a_message(message: Mapping[str, Any]) -> dict[str, Any]:
         raise CapabilityMeshValidationError("message.parts must be a non-empty list")
     message_id = data.get("messageId") or data.get("message_id") or f"msg-{uuid.uuid4().hex}"
     _require_non_empty_string(message_id, "message.messageId")
-    return {
-        "kind": "message",
+    validated: dict[str, Any] = {
         "messageId": str(message_id),
         "role": str(role),
         "parts": [validate_a2a_part(_require_mapping(part, "part")) for part in parts],
     }
+    for source_key, target_key in [
+        ("contextId", "contextId"),
+        ("context_id", "contextId"),
+        ("taskId", "taskId"),
+        ("task_id", "taskId"),
+    ]:
+        value = data.get(source_key)
+        if value is not None:
+            validated[target_key] = str(value)
+    if isinstance(data.get("metadata"), Mapping):
+        validated["metadata"] = copy.deepcopy(data["metadata"])
+    return validated
 
 
 def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
-    """Build a completed A2A-like task with response artifacts."""
+    """Build a completed A2A Protocol 1.0 SendMessageResponse."""
 
     validated = validate_a2a_message(message)
     text_count = sum(1 for part in validated["parts"] if "text" in part)
@@ -665,6 +680,9 @@ def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
         if str(part.get("mediaType", "")).startswith("image/")
     )
     task_id = f"a2a-{uuid.uuid4().hex}"
+    context_id = str(validated.get("contextId") or task_id)
+    validated["contextId"] = context_id
+    validated["taskId"] = task_id
     artifact_parts: list[dict[str, Any]] = [
         {
             "text": f"received {text_count} text part(s), {len(file_parts)} file part(s), {data_count} data part(s)",
@@ -676,14 +694,14 @@ def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
     ]
     if image_count:
         artifact_parts.append({"text": f"received {image_count} image file part(s)"})
-    return {
+    response = {
         "task": {
             "id": task_id,
-            "contextId": task_id,
+            "contextId": context_id,
             "status": {
                 "state": "TASK_STATE_COMPLETED",
                 "timestamp": _utc_now_iso(),
-                "message": {"messageId": f"{task_id}-status", "role": "ROLE_AGENT", "parts": artifact_parts[:1]},
+                "message": {"messageId": f"{task_id}-status", "role": "ROLE_AGENT", "parts": artifact_parts[:1], "contextId": context_id, "taskId": task_id},
             },
             "history": [validated],
             "artifacts": [
@@ -695,6 +713,7 @@ def build_a2a_task(message: Mapping[str, Any]) -> dict[str, Any]:
             ],
         }
     }
+    return validate_send_message_response_dict(response)
 
 
 def record_a2a_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:
@@ -712,6 +731,40 @@ def list_a2a_tasks(mesh_home: str | Path | None = None) -> list[dict[str, Any]]:
         return data
 
     return _list_registry_records("a2a-tasks", _validator, mesh_home)
+
+
+def build_a2a_list_tasks_response(mesh_home: str | Path | None = None) -> dict[str, Any]:
+    tasks = list_a2a_tasks(mesh_home)
+    return {"tasks": tasks, "pageSize": len(tasks), "totalSize": len(tasks)}
+
+
+def get_a2a_task(task_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    _safe_record_id(task_id, "task_id")
+    path = _mesh_registry_dir("a2a-tasks", mesh_home) / f"{task_id}.yaml"
+    if not path.exists():
+        raise CapabilityMeshValidationError(f"unknown A2A task id: {task_id}")
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    task = dict(_require_mapping(data, "a2a_task"))
+    _require_non_empty_string(task.get("id"), "a2a_task.id")
+    return task
+
+
+def cancel_a2a_task(task_id: str, mesh_home: str | Path | None = None) -> dict[str, Any]:
+    task = get_a2a_task(task_id, mesh_home=mesh_home)
+    status = dict(_require_mapping(task.get("status", {}), "a2a_task.status"))
+    status["state"] = "TASK_STATE_CANCELED"
+    status["timestamp"] = _utc_now_iso()
+    status["message"] = {
+        "messageId": f"{task_id}-canceled",
+        "role": "ROLE_AGENT",
+        "contextId": str(task.get("contextId", task_id)),
+        "taskId": task_id,
+        "parts": [{"text": "task canceled"}],
+    }
+    task["status"] = status
+    _write_registry_record("a2a-tasks", task_id, task, mesh_home)
+    return task
 
 
 def post_task(task: Mapping[str, Any], mesh_home: str | Path | None = None) -> Path:

@@ -18,12 +18,15 @@ def _agent_cards_dir(mesh_home: str | Path | None = None) -> Path:
 
 
 def _card_node_id(card: Mapping[str, Any]) -> str:
-    metadata = card.get("metadata")
-    if isinstance(metadata, Mapping):
-        node_id = metadata.get("node_id")
-        if isinstance(node_id, str) and node_id.strip():
-            return node_id
-    raise CapabilityMeshValidationError("agent card metadata.node_id is required")
+    for interface in card.get("supportedInterfaces", []):
+        if isinstance(interface, Mapping):
+            url = interface.get("url")
+            if isinstance(url, str) and "/relay/nodes/" in url:
+                suffix = url.split("/relay/nodes/", 1)[1]
+                node_id = suffix.split("/", 1)[0]
+                if node_id.strip():
+                    return node_id
+    raise CapabilityMeshValidationError("agent card relay supportedInterfaces[].url must include /relay/nodes/{node_id}/a2a")
 
 
 def register_node_agent_card(

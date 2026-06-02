@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     client_install.add_argument("--yes", action="store_true", help="Non-interactive mode; use flags/defaults")
     client_install.add_argument("--http-timeout", type=float, default=15.0)
     client_install.set_defaults(func=cmd_client_install)
-    client_a2a = client_sub.add_parser("send-a2a", help="Send an A2A-like message envelope")
+    client_a2a = client_sub.add_parser("send-a2a", help="Send an A2A Protocol 1.0 message envelope")
     client_a2a.add_argument("--message", help="Path to JSON/YAML message envelope; defaults to a TextPart from --text")
     client_a2a.add_argument("--text", help="TextPart content to send")
     client_a2a.add_argument("--image", help="Image file path to send as FilePart bytes/base64")

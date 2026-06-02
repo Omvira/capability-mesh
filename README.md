@@ -278,7 +278,7 @@ Node A -> Hub relay URL -> reverse tunnel -> Node B
 
 ## 8. A2A 消息测试
 
-向 Hub 的 A2A-shaped endpoint 发送文本消息：
+向 Hub 的 A2A Protocol 1.0 HTTP+JSON endpoint 发送文本消息：
 
 ```bash
 python3 -m capability_mesh.cli client \
@@ -313,7 +313,7 @@ python3 -m capability_mesh.cli client \
   --mime-type image/png
 ```
 
-当前 stdlib A2A-shaped endpoint 会返回 A2A-style task envelope：
+当前 stdlib HTTP+JSON endpoint 会返回通过官方 `a2a-sdk` protobuf model 校验的 `SendMessageResponse`：
 
 ```json
 {
@@ -396,7 +396,11 @@ POST /api/nodes
 GET  /api/nodes/statuses
 POST /api/nodes/{node_id}/heartbeat
 
+GET  /tasks
+GET  /tasks/{task_id}
+POST /tasks/{task_id}:cancel
 POST /message:send
+POST /message:stream  # returns 501 unless streaming is enabled
 POST /api/a2a/messages
 POST /api/a2a/tasks/send
 GET  /api/a2a/tasks
@@ -490,7 +494,7 @@ card = build_node_agent_card(
 )
 
 print(card["name"])
-print(card["url"])
+print(card["supportedInterfaces"][0]["url"])
 
 register_node_agent_card(
     manifest,

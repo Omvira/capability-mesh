@@ -16,8 +16,8 @@ The first principle is:
 ## Architecture
 
 - `capability_mesh.core`: public namespace for schemas, validators, local registries, deterministic routing, mixed server/node tool-call planning, assignment orchestration, privacy-safe node heartbeat/status records, result filtering, verification primitives, and contribution records.
-- `capability_mesh.dashboard`: public namespace for the standalone stdlib Server. It runs the Capability Mesh HTTP service, dashboard, JSON APIs, Agent Card, A2A-like message/task endpoints, and local registry.
-- `capability_mesh.client`: public namespace for the independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A-like message sending against a running Server.
+- `capability_mesh.dashboard`: public namespace for the standalone stdlib Server. It runs the Capability Mesh HTTP service, dashboard, JSON APIs, Agent Card, A2A Protocol 1.0 message/task endpoints, and local registry.
+- `capability_mesh.client`: public namespace for the independent stdlib Client for health polling, heartbeats, node registration, task polling/claiming/completion, and A2A Protocol 1.0 message sending against a running Server.
 - `capability_mesh.cli`: public namespace for the standalone CLI for local registry operations, starting the Server, starting Client commands/loops, and launching the guided trial Client installer.
 - `scripts/install_client.py`: stdlib-only guided installer for a first Client. It prompts for safe public metadata, registers with a Server, writes a local manifest, and optionally keeps the Client online with heartbeat.
 
@@ -33,7 +33,7 @@ Capability Mesh must not read or expose local memory, sessions, raw logs, reason
 - Assignment polling/claiming/completion records, privacy-safe node heartbeat/status records, and privacy-filtered result records.
 - A Server/Client split where Client liveness is reported through heartbeat/presence and Server liveness is detected by Client health polling.
 - A guided trial Client installer for first-run onboarding: generate a safe manifest, register, save local config, send initial heartbeat, optionally install a user systemd keep-online service or run a foreground heartbeat loop.
-- A2A-shaped JSON APIs: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, and response artifacts.
+- A2A Protocol 1.0 JSON APIs validated with the official `a2a-sdk`: Agent Card, message envelopes with `role` and `parts`, TextPart/FilePart/DataPart content, task envelopes, and response artifacts.
 - Contribution records that remain local-private unless explicit human consent is supplied for team/public visibility.
 - A standalone HTTP service and a bundled HTTP client.
 

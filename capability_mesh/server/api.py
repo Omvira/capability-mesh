@@ -12,13 +12,16 @@ from urllib.parse import unquote, urlsplit
 
 from capability_mesh.core import (
     CapabilityMeshValidationError,
+    build_a2a_list_tasks_response,
     build_a2a_task,
     build_agent_card,
     build_task_assignment,
+    cancel_a2a_task,
     claim_task_assignment,
     complete_task_assignment,
     default_mesh_home,
     execute_plan_step,
+    get_a2a_task,
     get_registered_node,
     list_node_assignments,
     list_a2a_tasks,
@@ -86,6 +89,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(list_task_results(self.mesh_home))
             elif path == "/api/a2a/tasks":
                 self._send_json(list_a2a_tasks(self.mesh_home))
+            elif path == "/tasks":
+                self._send_json(build_a2a_list_tasks_response(self.mesh_home), content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/tasks/"):
+                task_id = unquote(path.removeprefix("/tasks/"))
+                self._send_json(get_a2a_task(task_id, mesh_home=self.mesh_home), content_type="application/a2a+json; charset=utf-8")
             elif path == "/":
                 self._send_html(render_ui_shell(self.mesh_home))
             elif path.startswith("/static/"):
@@ -107,6 +115,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 task = build_a2a_task(message)
                 record_a2a_task(task, mesh_home=self.mesh_home)
                 self._send_json(task, content_type="application/a2a+json; charset=utf-8")
+            elif path.startswith("/tasks/") and path.endswith(":cancel"):
+                task_id = unquote(path.removeprefix("/tasks/").removesuffix(":cancel"))
+                task = cancel_a2a_task(task_id, mesh_home=self.mesh_home)
+                self._send_json(task, content_type="application/a2a+json; charset=utf-8")
+            elif path == "/message:stream":
+                self._send_json({"error": "streaming is not supported by this AgentCard"}, status=HTTPStatus.NOT_IMPLEMENTED)
             elif path.startswith("/api/nodes/") and path.endswith("/heartbeat"):
                 node_id = unquote(path.removeprefix("/api/nodes/").removesuffix("/heartbeat"))
                 status = data.get("status", "online")
