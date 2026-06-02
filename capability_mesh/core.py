@@ -533,13 +533,13 @@ def public_node_presence(
     return {"status": status, "label": status.replace("_", " "), "last_seen_at": record["last_seen_at"], "age_seconds": age_seconds}
 
 
-def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
-    """Return a privacy-safe Agent Card with A2A-compatible public metadata."""
+def build_hub_agent_card(*, hub_url: str | None = None) -> dict[str, Any]:
+    """Return a privacy-safe Hub Agent Card with A2A-compatible public metadata."""
 
-    url = str(server_url or "").rstrip("/")
+    url = str(hub_url or "").rstrip("/")
     return {
-        "name": "Capability Mesh Server",
-        "description": "Privacy-first Capability Mesh HTTP service for task-capable clients.",
+        "name": "Capability Mesh Hub",
+        "description": "Privacy-first Hub for a distributed A2A node network: registry, discovery, policy, audit, relay, and tunnel services.",
         "url": url,
         "version": "0.1.0",
         "protocolVersion": "1.0",
@@ -558,14 +558,28 @@ def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
         "skills": [
             {
                 "id": "capability-mesh-message-transfer",
-                "name": "Capability Mesh A2A Message Transfer",
-                "description": "Accepts A2A-like message envelopes with TextPart, FilePart, and DataPart content.",
-                "tags": ["a2a", "message", "task", "privacy-first"],
+                "name": "Capability Mesh Hub A2A Message Transfer",
+                "description": "Relays A2A-like message envelopes across a distributed A2A node network without exposing private node transport data.",
+                "tags": ["a2a", "hub", "node-network", "message", "task", "privacy-first"],
                 "inputModes": ["text/plain", "application/json", "image/png", "image/jpeg"],
                 "outputModes": ["text/plain", "application/json"],
+            },
+            {
+                "id": "capability-mesh-node-discovery",
+                "name": "Capability Mesh Node Discovery",
+                "description": "Provides registry and discovery metadata for privacy-safe node AgentCards.",
+                "tags": ["hub", "registry", "discovery", "agent-card"],
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
             }
         ],
     }
+
+
+def build_agent_card(*, server_url: str | None = None) -> dict[str, Any]:
+    """Backward-compatible alias for the Hub Agent Card builder."""
+
+    return build_hub_agent_card(hub_url=server_url)
 
 
 def validate_a2a_part(part: Mapping[str, Any]) -> dict[str, Any]:

@@ -36,6 +36,8 @@ from capability_mesh.core import (
     validate_task_contract,
 )
 from capability_mesh.client import CapabilityMeshClient, CapabilityMeshClientError
+from capability_mesh.hub.registry import find_agent_cards_by_skill, list_agent_cards, register_node_agent_card
+from capability_mesh.node.a2a import build_node_agent_card
 from capability_mesh.server.app import serve_dashboard
 from capability_mesh.mcp_server import run_mcp_server
 
@@ -137,6 +139,29 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.set_defaults(func=cmd_server)
+
+    hub = sub.add_parser("hub", help="Run and manage the Capability Mesh Hub")
+    hub_sub = hub.add_subparsers(dest="hub_command")
+    hub_start = hub_sub.add_parser("start", help="Start the Hub HTTP service and dashboard")
+    hub_start.add_argument("--host", default="127.0.0.1")
+    hub_start.add_argument("--port", type=int, default=8765)
+    hub_start.set_defaults(func=cmd_server)
+    hub_register = hub_sub.add_parser("register-node", help="Register a node AgentCard with the Hub registry")
+    hub_register.add_argument("--manifest", required=True)
+    hub_register.add_argument("--hub-url")
+    hub_register.add_argument("--relay-base-url")
+    hub_register.set_defaults(func=cmd_hub_register_node)
+    hub_agents = hub_sub.add_parser("agents", help="List registered node AgentCards")
+    hub_agents.add_argument("--skill")
+    hub_agents.set_defaults(func=cmd_hub_agents)
+
+    node = sub.add_parser("node", help="Manage A2A-capable Capability Mesh nodes")
+    node_sub = node.add_subparsers(dest="node_command")
+    node_card = node_sub.add_parser("agent-card", help="Build a public node AgentCard from a manifest")
+    node_card.add_argument("--manifest", required=True)
+    node_card.add_argument("--public-url")
+    node_card.add_argument("--relay-url")
+    node_card.set_defaults(func=cmd_node_agent_card)
 
     mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a Capability Mesh service")
     mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
@@ -357,6 +382,25 @@ def cmd_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_node_agent_card(args: argparse.Namespace) -> int:
+    manifest = _load_yaml_or_json(args.manifest)
+    _write_json_or_stdout(build_node_agent_card(manifest, public_url=args.public_url, relay_url=args.relay_url))
+    return 0
+
+
+def cmd_hub_register_node(args: argparse.Namespace) -> int:
+    manifest = _load_yaml_or_json(args.manifest)
+    card = register_node_agent_card(manifest, hub_url=args.hub_url, relay_base_url=args.relay_base_url, mesh_home=_mesh_home(args))
+    _write_json_or_stdout(card)
+    return 0
+
+
+def cmd_hub_agents(args: argparse.Namespace) -> int:
+    cards = find_agent_cards_by_skill(args.skill, mesh_home=_mesh_home(args)) if args.skill else list_agent_cards(mesh_home=_mesh_home(args))
+    _write_json_or_stdout(cards)
+    return 0
+
+
 def cmd_mcp_server(args: argparse.Namespace) -> int:
     return run_mcp_server(args.mesh_url, timeout=args.timeout)
 
@@ -537,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "client" and not getattr(args, "client_command", None):
         client_parser = build_parser()
         client_parser.parse_args(["client", "--url", args.url, "--help"])
+        return 2
+    if args.command == "hub" and not getattr(args, "hub_command", None):
+        build_parser().parse_args(["hub", "--help"])
+        return 2
+    if args.command == "node" and not getattr(args, "node_command", None):
+        build_parser().parse_args(["node", "--help"])
         return 2
     try:
         return args.func(args)

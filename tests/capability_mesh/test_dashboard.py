@@ -457,7 +457,8 @@ def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
 
     card = CapabilityMeshClient(dashboard_url).agent_card()
 
-    assert card["name"] == "Capability Mesh Server"
+    assert card["name"] == "Capability Mesh Hub"
+    assert "distributed A2A node network" in card["description"]
     assert card["url"] == dashboard_url
     assert card["protocolVersion"] == "1.0"
     assert card["protocolVersions"] == ["1.0"]
@@ -465,6 +466,7 @@ def test_a2a_agent_card_exposes_safe_service_metadata(dashboard_url):
     assert card["capabilities"]["streaming"] is False
     assert card["additionalInterfaces"][0]["url"] == f"{dashboard_url}/message:send"
     assert card["skills"][0]["id"] == "capability-mesh-message-transfer"
+    assert card["skills"][1]["id"] == "capability-mesh-node-discovery"
     body = json.dumps(card)
     assert "SECRET_TRANSPORT_COMMAND" not in body
     assert "dispatch_command" not in body

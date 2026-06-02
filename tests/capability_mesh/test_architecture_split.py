@@ -1,4 +1,4 @@
-"""Architecture tests for Capability Mesh's public server/client/ui split."""
+"""Architecture tests for Capability Mesh's public Hub/Node/UI split."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_capability_mesh_exposes_mesh_server_client_ui_boundaries():
-    """The public architecture is Mesh Server / Mesh Client / Mesh UI."""
+def test_capability_mesh_exposes_hub_node_ui_boundaries():
+    """The public architecture is Hub / Node / Mesh UI."""
 
     for package_name in [
+        "capability_mesh.hub",
+        "capability_mesh.hub.registry",
+        "capability_mesh.hub.relay",
+        "capability_mesh.node",
+        "capability_mesh.node.a2a",
         "capability_mesh.server",
         "capability_mesh.server.app",
         "capability_mesh.server.api",
@@ -59,7 +64,7 @@ def test_ui_projection_api_belongs_to_mesh_server_and_is_public_only():
 
 
 def test_server_api_serves_static_ui_and_public_projection_without_ui_backend():
-    """Mesh Server owns /api/ui/* and serves static Mesh UI assets directly."""
+    """The Hub HTTP service owns /api/ui/* and serves static Mesh UI assets directly."""
 
     source = (ROOT / "capability_mesh" / "server" / "api.py").read_text(encoding="utf-8")
     assert 'path == "/api/ui/dashboard"' in source
