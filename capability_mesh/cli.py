@@ -171,6 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
     node_start.add_argument("--port", type=int, default=8766)
     node_start.add_argument("--public-url")
     node_start.set_defaults(func=cmd_node_start)
+    node_install_dispatcher = node_sub.add_parser("install-dispatcher", help="Install a standard node dispatch helper")
+    node_install_dispatcher.add_argument("dispatcher", choices=["hermes-async"])
+    node_install_dispatcher.add_argument("--output", required=True, help="Script path to write")
+    node_install_dispatcher.add_argument("--jobs-dir", default="~/.capability-mesh-node/dispatch-jobs")
+    node_install_dispatcher.add_argument("--timeout-seconds", type=int, default=3600)
+    node_install_dispatcher.add_argument("--hermes-command", default=sys.executable)
+    node_install_dispatcher.add_argument("--manifest-snippet", action="store_true")
+    node_install_dispatcher.set_defaults(func=cmd_node_install_dispatcher)
 
     mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a Capability Mesh service")
     mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
@@ -402,6 +410,34 @@ def cmd_node_start(args: argparse.Namespace) -> int:
 
     manifest = _load_yaml_or_json(args.manifest)
     serve_node(manifest, host=args.host, port=args.port, mesh_home=_mesh_home(args), public_url=args.public_url)
+    return 0
+
+
+def cmd_node_install_dispatcher(args: argparse.Namespace) -> int:
+    from capability_mesh.node.dispatchers.hermes_async import build_manifest_snippet
+
+    output = Path(args.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "#!/usr/bin/env python3\n"
+        "from capability_mesh.node.dispatchers.hermes_async import main\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+    )
+    output.write_text(script, encoding="utf-8")
+    output.chmod(0o700)
+    dispatch_command = [args.hermes_command, str(output)]
+    snippet = build_manifest_snippet(
+        dispatch_command,
+        jobs_dir=Path(args.jobs_dir).expanduser(),
+        timeout_seconds=args.timeout_seconds,
+    )
+    if args.manifest_snippet:
+        _write_yaml_or_stdout(snippet, None)
+    else:
+        print(f"Installed {args.dispatcher} dispatcher at {output}")
+        print("Add this manifest snippet under your node manifest:")
+        _write_yaml_or_stdout(snippet, None)
     return 0
 
 

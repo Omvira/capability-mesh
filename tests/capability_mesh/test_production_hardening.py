@@ -58,14 +58,14 @@ def test_push_rejects_unsafe_private_webhook_url_on_public_hub(tmp_path: Path) -
 
 
 def test_push_config_registered_after_async_completion_delivers_existing_completed_task(tmp_path: Path) -> None:
-    from tests.capability_mesh.test_production_maturity import _FlakyPushHook, _start_server
     from http.server import ThreadingHTTPServer
+
+    from tests.capability_mesh.test_production_maturity import _FlakyPushHook, _start_hub, _start_server
 
     _FlakyPushHook.attempts = []
     _FlakyPushHook.fail_count = 0
     hook = ThreadingHTTPServer(("127.0.0.1", 0), _FlakyPushHook)
     hook_thread = _start_server(hook)
-    from tests.capability_mesh.test_production_maturity import _start_hub
 
     hub, hub_thread, hub_port = _start_hub(tmp_path)
     try:
@@ -112,3 +112,24 @@ def test_runtime_marks_stale_running_records_after_restart(tmp_path: Path) -> No
     record = recovered.get_record(task_id)
     assert record["state"] == "failed"
     assert "interrupted" in record["error"]
+
+
+def test_runtime_record_writes_are_atomic_for_readers(tmp_path: Path, monkeypatch) -> None:
+    from capability_mesh.node import runtime_queue
+    from capability_mesh.node.runtime_queue import DurableTaskRuntime
+
+    observed_final_path_write = False
+    original_write_text = Path.write_text
+
+    def tracing_write_text(self: Path, *args, **kwargs):
+        nonlocal observed_final_path_write
+        if self.name == "runtime-atomic.json":
+            observed_final_path_write = True
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_queue.Path, "write_text", tracing_write_text)
+    runtime = DurableTaskRuntime(tmp_path, autostart=False)
+    runtime._write_record("runtime-atomic", {"id": "runtime-atomic", "state": "queued"})
+
+    assert not observed_final_path_write
+    assert runtime.get_record("runtime-atomic")["state"] == "queued"

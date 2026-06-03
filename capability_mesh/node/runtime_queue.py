@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -129,7 +130,7 @@ class DurableTaskRuntime:
             loaded["error"] = "task interrupted before runtime recovery"
             loaded["updated_at"] = _utc_now_iso()
             loaded.setdefault("transitions", []).append({"state": "failed", "timestamp": _utc_now_iso(), "reason": "runtime recovery"})
-            path.write_text(json.dumps(loaded, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            self._write_record(str(path.with_suffix("").name), loaded)
 
     def get_record(self, task_id: str) -> dict[str, Any]:
         path = self.tasks_dir / f"{task_id}.json"
@@ -141,7 +142,13 @@ class DurableTaskRuntime:
 
     def _write_record(self, task_id: str, record: dict[str, Any]) -> None:
         path = self.tasks_dir / f"{task_id}.json"
-        path.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path = self.tasks_dir / f".{task_id}.{uuid.uuid4().hex}.tmp"
+        payload = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        with tmp_path.open("w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
 
 
 __all__ = ["DurableTaskRuntime"]
