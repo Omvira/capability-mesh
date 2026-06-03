@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import uuid
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from capability_mesh.core import CapabilityMeshValidationError, build_a2a_task, record_a2a_task
+from capability_mesh.a2a_compat import validate_send_message_response_dict
+from capability_mesh.core import CapabilityMeshValidationError, build_a2a_task, record_a2a_task, validate_a2a_message
 from capability_mesh.node.a2a import build_node_agent_card
+from capability_mesh.server.redaction import redact_text
 
 
 class NodeRuntimeHandler(BaseHTTPRequestHandler):
@@ -37,7 +42,7 @@ class NodeRuntimeHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             if path in {"/message:send", "/api/a2a/messages", "/api/a2a/tasks/send"}:
                 message = data.get("message", data)
-                response = build_a2a_task(message)
+                response = dispatch_a2a_message(self.manifest, message)
                 record_a2a_task(response, mesh_home=self.mesh_home)
                 self._send_json(response, content_type="application/a2a+json; charset=utf-8")
             else:
@@ -72,6 +77,72 @@ class NodeRuntimeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+
+def dispatch_a2a_message(manifest: Mapping[str, Any], message: Mapping[str, Any]) -> dict[str, Any]:
+    """Dispatch an A2A message to the local Agent Runtime when configured."""
+
+    transport = manifest.get("transport")
+    if not isinstance(transport, Mapping) or "dispatch_command" not in transport:
+        return build_a2a_task(message)
+    dispatch_command = transport.get("dispatch_command")
+    if not isinstance(dispatch_command, list) or not all(isinstance(part, str) and part for part in dispatch_command):
+        raise CapabilityMeshValidationError("transport.dispatch_command must be a non-empty list of strings")
+    timeout = transport.get("timeout_seconds", 10)
+    if not isinstance(timeout, int):
+        raise CapabilityMeshValidationError("transport.timeout_seconds must be an integer")
+
+    payload = {"message": message, "node_id": manifest.get("node_id")}
+    try:
+        completed = subprocess.run(
+            list(dispatch_command),
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return _build_a2a_task_with_text(message, "TASK_STATE_FAILED", f"dispatch command timed out after {timeout} second(s)")
+
+    if completed.returncode == 0:
+        text = completed.stdout.strip() or "dispatch completed without output"
+        return _build_a2a_task_with_text(message, "TASK_STATE_COMPLETED", text)
+
+    detail = redact_text((completed.stderr or completed.stdout or "").strip())
+    text = f"dispatch command failed with exit code {completed.returncode}"
+    if detail:
+        text = f"{text}: {detail}"
+    return _build_a2a_task_with_text(message, "TASK_STATE_FAILED", text)
+
+
+def _build_a2a_task_with_text(message: Mapping[str, Any], state: str, text: str) -> dict[str, Any]:
+    validated = validate_a2a_message(message)
+    task_id = f"a2a-{uuid.uuid4().hex}"
+    context_id = str(validated.get("contextId") or task_id)
+    validated["contextId"] = context_id
+    validated["taskId"] = task_id
+    part = {"text": text}
+    response = {
+        "task": {
+            "id": task_id,
+            "contextId": context_id,
+            "status": {
+                "state": state,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "message": {"messageId": f"{task_id}-status", "role": "ROLE_AGENT", "parts": [part], "contextId": context_id, "taskId": task_id},
+            },
+            "history": [validated],
+            "artifacts": [
+                {
+                    "artifactId": f"{task_id}-artifact-1",
+                    "name": "Capability Mesh dispatch response",
+                    "parts": [part],
+                }
+            ],
+        }
+    }
+    return validate_send_message_response_dict(response)
 
 
 def make_node_server(
@@ -118,4 +189,4 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["NodeRuntimeHandler", "make_node_server", "serve_node", "main"]
+__all__ = ["NodeRuntimeHandler", "dispatch_a2a_message", "make_node_server", "serve_node", "main"]

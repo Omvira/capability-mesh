@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -58,6 +59,19 @@ def _send_async_message(port: int, text: str = "async") -> dict[str, Any]:
     response = conn.getresponse()
     assert response.status == HTTPStatus.ACCEPTED
     return _json_response(response)
+
+
+def _send_node_message(port: int, text: str) -> dict[str, Any]:
+    conn = HTTPConnection("127.0.0.1", port, timeout=10)
+    payload = json.dumps({"message": {"role": "ROLE_USER", "parts": [{"text": text}]}})
+    conn.request("POST", "/message:send", body=payload, headers={"Content-Type": "application/a2a+json"})
+    response = conn.getresponse()
+    assert response.status == HTTPStatus.OK
+    return _json_response(response)
+
+
+def _task_text(response: dict[str, Any]) -> str:
+    return json.dumps(response["task"].get("status", {})) + json.dumps(response["task"].get("artifacts", []))
 
 
 class _FlakyPushHook(BaseHTTPRequestHandler):
@@ -211,6 +225,98 @@ def test_node_a2a_client_calls_supported_interface_url(tmp_path: Path) -> None:
         response = NodeA2AClient(card).send_message({"role": "ROLE_USER", "parts": [{"text": "client call"}]})
         ParseDict(response, a2a_types.SendMessageResponse())
         assert response["task"]["history"][0]["parts"][0]["text"] == "client call"
+    finally:
+        _stop(node, thread)
+
+
+def test_node_dispatch_command_receives_message_json_and_returns_stdout(tmp_path: Path) -> None:
+    from capability_mesh.core import build_default_capability_manifest
+    from capability_mesh.node.runtime import make_node_server
+
+    stdin_path = tmp_path / "stdin.json"
+    script = tmp_path / "dispatch.py"
+    script.write_text(
+        """
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(payload, f)
+text = payload["message"]["parts"][0]["text"]
+print(f"runtime handled {text} for {payload['node_id']}")
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = build_default_capability_manifest(
+        node_id="dispatch-node",
+        display_name="Dispatch",
+        task_types=["echo"],
+        tools_available=["python"],
+        dispatch_command=[sys.executable, str(script), str(stdin_path)],
+    )
+    node = make_node_server(manifest, host="127.0.0.1", port=0, mesh_home=tmp_path)
+    thread = _start_server(node)
+    try:
+        response = _send_node_message(int(node.server_address[1]), "hello dispatch")
+        ParseDict(response, a2a_types.SendMessageResponse())
+        assert response["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert "runtime handled hello dispatch for dispatch-node" in _task_text(response)
+        assert "received 1 text part(s)" not in _task_text(response)
+        recorded_stdin = json.loads(stdin_path.read_text(encoding="utf-8"))
+        assert recorded_stdin["node_id"] == "dispatch-node"
+        assert recorded_stdin["message"]["parts"][0]["text"] == "hello dispatch"
+    finally:
+        _stop(node, thread)
+
+
+def test_node_without_dispatch_command_keeps_placeholder_response(tmp_path: Path) -> None:
+    from capability_mesh.core import build_default_capability_manifest
+    from capability_mesh.node.runtime import make_node_server
+
+    manifest = build_default_capability_manifest(node_id="placeholder-node", display_name="Placeholder", task_types=["echo"], tools_available=["python"])
+    node = make_node_server(manifest, host="127.0.0.1", port=0, mesh_home=tmp_path)
+    thread = _start_server(node)
+    try:
+        response = _send_node_message(int(node.server_address[1]), "fallback")
+        ParseDict(response, a2a_types.SendMessageResponse())
+        assert response["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert "received 1 text part(s)" in _task_text(response)
+    finally:
+        _stop(node, thread)
+
+
+def test_node_dispatch_command_failure_redacts_token_like_stderr(tmp_path: Path) -> None:
+    from capability_mesh.core import build_default_capability_manifest
+    from capability_mesh.node.runtime import make_node_server
+
+    script = tmp_path / "fail_dispatch.py"
+    script.write_text(
+        """
+import sys
+
+sys.stderr.write("failed with api_token=super-secret-dispatch-token")
+raise SystemExit(7)
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest = build_default_capability_manifest(
+        node_id="failing-dispatch-node",
+        display_name="Failing Dispatch",
+        task_types=["echo"],
+        tools_available=["python"],
+        dispatch_command=[sys.executable, str(script)],
+    )
+    node = make_node_server(manifest, host="127.0.0.1", port=0, mesh_home=tmp_path)
+    thread = _start_server(node)
+    try:
+        response = _send_node_message(int(node.server_address[1]), "please fail")
+        ParseDict(response, a2a_types.SendMessageResponse())
+        assert response["task"]["status"]["state"] == "TASK_STATE_FAILED"
+        text = _task_text(response)
+        assert "dispatch command failed with exit code 7" in text
+        assert "super-secret-dispatch-token" not in text
+        assert "[REDACTED]" in text
     finally:
         _stop(node, thread)
 
