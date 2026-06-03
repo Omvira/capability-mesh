@@ -23,6 +23,10 @@ Capability Mesh does not expose local memory, session history, raw logs, reasoni
 
 ## Architecture
 
+![Capability Mesh architecture](docs/assets/capability-mesh-architecture.svg)
+
+The diagram above is intentionally generic. It uses placeholder node names and public protocol concepts only. It does not include real hosts, IP addresses, usernames, local paths, credentials, memory, logs, or secrets.
+
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │                            Hub                               │
@@ -620,6 +624,8 @@ pytest -q
 ```
 
 ## Privacy model
+
+![Capability Mesh privacy boundary](docs/assets/privacy-boundary.svg)
 
 Capability Mesh defaults to public projection. A node publishes the small amount of information required for discovery and routing. Everything else stays local unless the node explicitly chooses to return it as part of a task result.
 
