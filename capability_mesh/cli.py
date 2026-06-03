@@ -183,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_server = sub.add_parser("mcp-server", help="Run a stdio MCP server adapter for a Capability Mesh service")
     mcp_server.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
     mcp_server.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds")
+    mcp_server.add_argument("--auth-token", default=None, help="Bearer token for protected Hub write endpoints; defaults to $CAPABILITY_MESH_AUTH_TOKEN")
     mcp_server.set_defaults(func=cmd_mcp_server)
 
     client = sub.add_parser("client", help="Call a running Capability Mesh service")
@@ -455,7 +456,7 @@ def cmd_hub_agents(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_server(args: argparse.Namespace) -> int:
-    return run_mcp_server(args.mesh_url, timeout=args.timeout)
+    return run_mcp_server(args.mesh_url, timeout=args.timeout, auth_token=args.auth_token)
 
 
 def _client(args: argparse.Namespace) -> CapabilityMeshClient:

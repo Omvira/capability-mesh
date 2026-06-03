@@ -468,6 +468,14 @@ capability-mesh mcp-server \
   --mesh-url http://<HUB_HOST>:8765
 ```
 
+For Hubs that protect write endpoints with bearer auth, either export `CAPABILITY_MESH_AUTH_TOKEN` before starting the MCP adapter or pass `--auth-token` explicitly:
+
+```bash
+export CAPABILITY_MESH_AUTH_TOKEN='[REDACTED]'
+capability-mesh mcp-server \
+  --mesh-url http://<HUB_HOST>:8765
+```
+
 Example MCP client configuration:
 
 ```json
@@ -482,7 +490,9 @@ Example MCP client configuration:
         "--mesh-url",
         "http://<HUB_HOST>:8765"
       ],
-      "env": {}
+      "env": {
+        "CAPABILITY_MESH_AUTH_TOKEN": "***"
+      }
     }
   }
 }
@@ -534,7 +544,7 @@ HTTP client:
 ```python
 from capability_mesh.client import CapabilityMeshClient
 
-client = CapabilityMeshClient("http://<HUB_HOST>:8765")
+client = CapabilityMeshClient("http://<HUB_HOST>:8765", auth_token="***")
 print(client.health())
 print(client.agent_card())
 print(client.list_nodes())

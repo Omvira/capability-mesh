@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -59,8 +60,8 @@ def sanitize_for_mcp(value: Any) -> Any:
 class CapabilityMeshMCPTools:
     """Thin, testable tool implementations over the Capability Mesh HTTP client."""
 
-    def __init__(self, mesh_url: str, *, timeout: float = 10.0):
-        self.client = CapabilityMeshClient(mesh_url, timeout=timeout)
+    def __init__(self, mesh_url: str, *, timeout: float = 10.0, auth_token: str | None = None):
+        self.client = CapabilityMeshClient(mesh_url, timeout=timeout, auth_token=auth_token)
 
     def list_clients(self) -> list[dict[str, Any]]:
         return sanitize_for_mcp(self.client.list_nodes())
@@ -120,7 +121,7 @@ def _register_fastmcp_tools(server: Any, tools: CapabilityMeshMCPTools) -> None:
         return tools.send_a2a_message(message)
 
 
-def run_mcp_server(mesh_url: str, *, timeout: float = 10.0) -> int:
+def run_mcp_server(mesh_url: str, *, timeout: float = 10.0, auth_token: str | None = None) -> int:
     """Run the stdio MCP server, using the Python MCP SDK when installed."""
 
     try:
@@ -130,7 +131,10 @@ def run_mcp_server(mesh_url: str, *, timeout: float = 10.0) -> int:
         return 1
 
     server = FastMCP("Capability Mesh")
-    _register_fastmcp_tools(server, CapabilityMeshMCPTools(mesh_url, timeout=timeout))
+    _register_fastmcp_tools(
+        server,
+        CapabilityMeshMCPTools(mesh_url, timeout=timeout, auth_token=auth_token or os.environ.get("CAPABILITY_MESH_AUTH_TOKEN")),
+    )
     server.run(transport="stdio")
     return 0
 
@@ -139,12 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a Capability Mesh stdio MCP server adapter.")
     parser.add_argument("--url", "--mesh-url", dest="mesh_url", required=True, help="Capability Mesh service base URL")
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds")
+    parser.add_argument("--auth-token", default=None, help="Bearer token for protected Hub write endpoints; defaults to $CAPABILITY_MESH_AUTH_TOKEN")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return run_mcp_server(args.mesh_url, timeout=args.timeout)
+    return run_mcp_server(args.mesh_url, timeout=args.timeout, auth_token=args.auth_token)
 
 
 if __name__ == "__main__":  # pragma: no cover

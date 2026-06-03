@@ -28,11 +28,14 @@ def _json_request(
     method: str = "GET",
     payload: Mapping[str, Any] | None = None,
     timeout: float = 10.0,
+    auth_token: str | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     normalized_path = path if path.startswith("/") else f"/{path}"
     url = base_url.rstrip("/") + normalized_path
     body = None
     headers = {"Accept": "application/a2a+json, application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/a2a+json; charset=utf-8"
@@ -56,12 +59,13 @@ def _json_request(
 class CapabilityMeshClient:
     """Small stdlib HTTP client for the standalone Capability Mesh service."""
 
-    def __init__(self, base_url: str, *, timeout: float = 10.0):
+    def __init__(self, base_url: str, *, timeout: float = 10.0, auth_token: str | None = None):
         self.base_url = base_url
         self.timeout = timeout
+        self.auth_token = auth_token
 
     def health(self) -> dict[str, Any]:
-        data = _json_request(self.base_url, "/health", timeout=self.timeout)
+        data = _json_request(self.base_url, "/health", timeout=self.timeout, auth_token=self.auth_token)
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("health endpoint returned a list")
         return data
@@ -73,19 +77,19 @@ class CapabilityMeshClient:
             return False
 
     def agent_card(self) -> dict[str, Any]:
-        data = _json_request(self.base_url, "/.well-known/agent-card.json", timeout=self.timeout)
+        data = _json_request(self.base_url, "/.well-known/agent-card.json", timeout=self.timeout, auth_token=self.auth_token)
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("agent card endpoint returned a list")
         return data
 
     def list_nodes(self) -> list[dict[str, Any]]:
-        data = _json_request(self.base_url, "/api/nodes", timeout=self.timeout)
+        data = _json_request(self.base_url, "/api/nodes", timeout=self.timeout, auth_token=self.auth_token)
         if not isinstance(data, list):
             raise CapabilityMeshClientError("nodes endpoint returned a non-list")
         return [dict(node) for node in data]
 
     def get_node(self, node_id: str) -> dict[str, Any]:
-        data = _json_request(self.base_url, f"/api/nodes/{quote(node_id)}", timeout=self.timeout)
+        data = _json_request(self.base_url, f"/api/nodes/{quote(node_id)}", timeout=self.timeout, auth_token=self.auth_token)
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("node endpoint returned a list")
         return data
@@ -97,6 +101,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=validate_capability_manifest(manifest),
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("register endpoint returned a list")
@@ -109,6 +114,7 @@ class CapabilityMeshClient:
             method="POST",
             payload={"status": status},
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("heartbeat endpoint returned a list")
@@ -121,6 +127,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=validate_task_contract(task),
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("post task endpoint returned a list")
@@ -144,6 +151,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=payload,
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("route endpoint returned a list")
@@ -164,6 +172,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=payload,
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("plan endpoint returned a list")
@@ -184,6 +193,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=payload,
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("plan-step endpoint returned a list")
@@ -198,6 +208,7 @@ class CapabilityMeshClient:
             method="POST",
             payload=payload,
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("record result endpoint returned a list")
@@ -210,13 +221,14 @@ class CapabilityMeshClient:
             self.base_url,
             f"/api/nodes/{quote(node_id)}/assignments",
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, list):
             raise CapabilityMeshClientError("node assignments endpoint returned a non-list")
         return [dict(item) for item in data]
 
     def list_assignments(self) -> list[dict[str, Any]]:
-        data = _json_request(self.base_url, "/api/assignments", timeout=self.timeout)
+        data = _json_request(self.base_url, "/api/assignments", timeout=self.timeout, auth_token=self.auth_token)
         if not isinstance(data, list):
             raise CapabilityMeshClientError("assignments endpoint returned a non-list")
         return [dict(item) for item in data]
@@ -228,6 +240,7 @@ class CapabilityMeshClient:
             method="POST",
             payload={"node_id": node_id},
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("claim endpoint returned a list")
@@ -245,6 +258,7 @@ class CapabilityMeshClient:
             method="POST",
             payload={"node_id": node_id, "result": dict(result)},
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("complete endpoint returned a list")
@@ -257,6 +271,7 @@ class CapabilityMeshClient:
             method="POST",
             payload={},
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("wake endpoint returned a list")
@@ -269,6 +284,7 @@ class CapabilityMeshClient:
             method="POST",
             payload={"message": dict(message)},
             timeout=self.timeout,
+            auth_token=self.auth_token,
         )
         if not isinstance(data, dict):
             raise CapabilityMeshClientError("A2A message endpoint returned a list")

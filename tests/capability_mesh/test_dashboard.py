@@ -842,13 +842,46 @@ def test_client_and_cli_can_request_assignment_wake(dashboard_url):
 def test_cli_parses_mcp_server_url_aliases(dashboard_url):
     from capability_mesh.cli import build_parser
 
-    by_url = build_parser().parse_args(["mcp-server", "--url", dashboard_url, "--timeout", "3"])
+    by_url = build_parser().parse_args(["mcp-server", "--url", dashboard_url, "--timeout", "3", "--auth-token", "cli-token"])
     by_mesh_url = build_parser().parse_args(["mcp-server", "--mesh-url", dashboard_url])
 
     assert by_url.command == "mcp-server"
     assert by_url.mesh_url == dashboard_url
     assert by_url.timeout == 3
+    assert by_url.auth_token == "cli-token"
     assert by_mesh_url.mesh_url == dashboard_url
+
+
+def test_capability_mesh_client_sends_bearer_token_to_protected_route(tmp_path):
+    from capability_mesh.client import CapabilityMeshClient
+    from capability_mesh.server.api import make_server
+
+    _register_dashboard_node(tmp_path)
+    server = make_server(port=0, mesh_home=tmp_path, auth_token="client-secret")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        client = CapabilityMeshClient(base_url, auth_token="client-secret")
+
+        client.post_task(_task("task-auth-route"))
+        routed = client.route_task(_task("task-auth-route"), required_tools=["pytest"])
+
+        assert routed["route"]["selected_node"] == "dash-node"
+        assert routed["assignment"]["task_id"] == "task-auth-route"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_mcp_tools_pass_auth_token_to_http_client():
+    from capability_mesh.mcp_server import CapabilityMeshMCPTools
+
+    tools = CapabilityMeshMCPTools("http://example.invalid", auth_token="mcp-secret", timeout=2)
+
+    assert tools.client.auth_token == "mcp-secret"
+    assert tools.client.timeout == 2
 
 
 def test_mcp_sanitization_removes_private_transport_fields():
